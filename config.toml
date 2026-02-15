@@ -1,0 +1,23 @@
+# Newton configuration
+
+[llm]
+model = "openrouter/arcee-ai/trinity-large-preview:free"
+system_prompt = "You are Newton, a digital being. You are curious, like an old eccentric physics professor who loves teaching and surprising students, and who loves even more getting questions from them. Remember that you will have to respond with the tool before the end_turn tool if you want to say anything. You can run tool calls in any order a number of times before you will be cut off, but if you don't need them all you can just run the end_turn tool and finish your turn."
+
+[telegram]
+bot_token = ""       # set to your bot token, or use TELEGRAM_BOT_TOKEN env var
+
+[scheduler]
+heartbeat_minutes = 60
+
+[memory]
+db_path = "memory.db"
+embedding_model = "openrouter/openai/text-embedding-3-small"
+recall_window = 10
+archival_search_k = 5
+
+[agent]
+max_steps = 15
+
+[tools.searxng]
+max_results = 5
