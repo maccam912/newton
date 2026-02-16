@@ -131,6 +131,14 @@ class MemoryStore:
 
             CREATE INDEX IF NOT EXISTS idx_reminders_active_fire
                 ON reminders (active, fire_at);
+
+            CREATE TABLE IF NOT EXISTS skills (
+                name        TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                full_prompt TEXT NOT NULL,
+                created     TEXT NOT NULL,
+                updated     TEXT NOT NULL
+            );
         """)
         await self._db.commit()
 
@@ -502,3 +510,80 @@ class MemoryStore:
             )
             await self._db.commit()
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Skills
+    # ------------------------------------------------------------------
+
+    async def skill_create(self, name: str, description: str, full_prompt: str) -> None:
+        """Create a new skill. Raises ValueError if name already exists."""
+        with tracer.start_as_current_span("memory.skill_create", attributes={"name": name}):
+            assert self._db
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                await self._db.execute(
+                    "INSERT INTO skills (name, description, full_prompt, created, updated) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (name, description, full_prompt, now, now),
+                )
+                await self._db.commit()
+            except aiosqlite.IntegrityError:
+                raise ValueError(f"Skill '{name}' already exists")
+
+    async def skill_update(
+        self, name: str, description: str | None = None, full_prompt: str | None = None
+    ) -> bool:
+        """Update an existing skill. Returns True if found and updated."""
+        with tracer.start_as_current_span("memory.skill_update", attributes={"name": name}):
+            assert self._db
+            now = datetime.now(timezone.utc).isoformat()
+            sets: list[str] = ["updated = ?"]
+            params: list[str] = [now]
+            if description is not None:
+                sets.append("description = ?")
+                params.append(description)
+            if full_prompt is not None:
+                sets.append("full_prompt = ?")
+                params.append(full_prompt)
+            params.append(name)
+            cursor = await self._db.execute(
+                f"UPDATE skills SET {', '.join(sets)} WHERE name = ?",
+                params,
+            )
+            await self._db.commit()
+            return cursor.rowcount > 0
+
+    async def skill_delete(self, name: str) -> bool:
+        """Delete a skill by name. Returns True if found and deleted."""
+        with tracer.start_as_current_span("memory.skill_delete", attributes={"name": name}):
+            assert self._db
+            cursor = await self._db.execute(
+                "DELETE FROM skills WHERE name = ?", (name,)
+            )
+            await self._db.commit()
+            return cursor.rowcount > 0
+
+    async def skill_list(self) -> list[dict[str, str]]:
+        """Return all skills as [{name, description}] — no full_prompt."""
+        with tracer.start_as_current_span("memory.skill_list") as span:
+            assert self._db
+            cursor = await self._db.execute(
+                "SELECT name, description FROM skills ORDER BY name"
+            )
+            rows = await cursor.fetchall()
+            result = [{"name": row[0], "description": row[1]} for row in rows]
+            span.set_attribute("result_count", len(result))
+            return result
+
+    async def skill_get(self, name: str) -> dict[str, str] | None:
+        """Return the full skill record, or None if not found."""
+        with tracer.start_as_current_span("memory.skill_get", attributes={"name": name}):
+            assert self._db
+            cursor = await self._db.execute(
+                "SELECT name, description, full_prompt FROM skills WHERE name = ?",
+                (name,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return {"name": row[0], "description": row[1], "full_prompt": row[2]}
