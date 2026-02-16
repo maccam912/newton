@@ -337,6 +337,36 @@ async def process_turn(
                 trace.get_current_span().record_exception(e)
 
 
+def _batch_key(event: Event) -> str:
+    """Group key: source + chat_id (so telegram chats batch separately)."""
+    chat_id = event.metadata.get("chat_id", "")
+    return f"{event.source}:{chat_id}"
+
+
+def _merge_events(events: list[Event]) -> Event:
+    """Combine multiple events from the same chat into one.
+
+    Payloads are joined with newlines; metadata comes from the latest event.
+    """
+    if len(events) == 1:
+        return events[0]
+
+    combined_payload = "\n".join(e.payload for e in events if e.payload)
+    latest = events[-1]
+    log.info(
+        "batched %d messages from %s into one turn (%d chars)",
+        len(events), _batch_key(latest), len(combined_payload),
+    )
+    return Event(
+        source=latest.source,
+        kind=latest.kind,
+        payload=combined_payload,
+        reply_to=latest.reply_to,
+        metadata=latest.metadata,
+        timestamp=latest.timestamp,
+    )
+
+
 async def run_agent_loop(
     bus: EventBus, cfg: Config, memory: MemoryStore
 ) -> None:
@@ -345,11 +375,26 @@ async def run_agent_loop(
 
     async with agent:  # opens MCP server connections (e.g. Playwright)
         while True:
+            # Block until at least one event arrives
             event = await bus.inbox.get()
 
             # Skip non-message events (e.g. heartbeats)
             if event.kind != EventKind.MESSAGE:
                 continue
 
-            await process_turn(event, memory, bus, agent, cfg)
+            # Drain any additional queued events that arrived while we were busy
+            pending: list[Event] = [event]
+            while not bus.inbox.empty():
+                extra = bus.inbox.get_nowait()
+                if extra.kind == EventKind.MESSAGE:
+                    pending.append(extra)
+
+            # Group by source+chat_id, merge each group, process each turn
+            groups: dict[str, list[Event]] = {}
+            for ev in pending:
+                groups.setdefault(_batch_key(ev), []).append(ev)
+
+            for batch in groups.values():
+                merged = _merge_events(batch)
+                await process_turn(merged, memory, bus, agent, cfg)
 

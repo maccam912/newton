@@ -73,10 +73,25 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
         log.warning("No bot token configured — skipping Telegram adapter.")
         return
 
+    token_preview = cfg.telegram.bot_token[:8] + "…"
+    log.info("Building Telegram app (token=%s)", token_preview)
+
     # Track every chat we've seen so the agent can browse them later
     known_chats: dict[str, str] = {}   # chat_id -> chat title/name
 
     app = ApplicationBuilder().token(cfg.telegram.bot_token).build()
+
+    # Fetch bot identity so we know the connection works
+    log.info("Connecting to Telegram API…")
+    try:
+        bot_info = await app.bot.get_me()
+        log.info(
+            "Connected as @%s  (id=%s, name=%s)",
+            bot_info.username, bot_info.id, bot_info.full_name,
+        )
+    except Exception as exc:
+        log.error("Failed to connect to Telegram API: %s", exc)
+        return
 
     async def on_message(update: Update, _context) -> None:
         if not update.message:
@@ -114,8 +129,22 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
         )
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-    log.info("Telegram polling started")
-    await app.run_polling()
+
+    # Use the low-level async lifecycle instead of run_polling(), which tries
+    # to manage its own event loop and conflicts with the already-running one.
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    log.info("Polling loop started — listening for messages…")
+
+    # Block forever (until the task is cancelled on shutdown)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        log.info("Shutting down Telegram polling…")
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -125,17 +154,24 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
 async def send_replies(bus: EventBus, cfg: Config) -> None:
     """Pull response events from this channel's outbox and send on Telegram."""
     if not cfg.telegram.bot_token:
+        log.warning("No bot token — send_replies skipped.")
         return
 
     from telegram import Bot
     bot = Bot(token=cfg.telegram.bot_token)
 
     outbox = bus.register_channel(CHANNEL)
+    log.info("Reply sender ready — waiting for outbox events…")
     while True:
         event = await outbox.get()
         chat_id = event.metadata.get("chat_id")
-        if chat_id:
-            # Stop typing now that we have a reply
-            _stop_typing(chat_id)
-            log.info("MSG OUT chat_id=%-14s  len=%d", chat_id, len(event.payload))
+        if not chat_id:
+            log.warning("Outbox event has no chat_id, dropping: %s", event.payload[:80])
+            continue
+        # Stop typing now that we have a reply
+        _stop_typing(chat_id)
+        log.info("MSG OUT chat_id=%-14s  len=%d", chat_id, len(event.payload))
+        try:
             await bot.send_message(chat_id=chat_id, text=event.payload)
+        except Exception as exc:
+            log.error("Failed to send to chat %s: %s", chat_id, exc)
