@@ -61,6 +61,7 @@ async def _embed(text: str, model: str) -> list[float]:
 _DEFAULT_CORE_BLOCKS: dict[str, str] = {
     "persona": "I am Newton, a helpful AI assistant.",
     "directives": "Be concise.  Ask clarifying questions when unsure.",
+    "notebook": "",
 }
 
 
@@ -132,16 +133,16 @@ class MemoryStore:
             )
             await self._db.commit()
 
-        # Seed default core blocks if empty
-        cursor = await self._db.execute("SELECT COUNT(*) FROM core_memory")
-        row = await cursor.fetchone()
-        if row and row[0] == 0:
-            for block, content in _DEFAULT_CORE_BLOCKS.items():
+        # Seed any missing default core blocks
+        cursor = await self._db.execute("SELECT block FROM core_memory")
+        existing = {row[0] for row in await cursor.fetchall()}
+        for block, content in _DEFAULT_CORE_BLOCKS.items():
+            if block not in existing:
                 await self._db.execute(
                     "INSERT INTO core_memory (block, content) VALUES (?, ?)",
                     (block, content),
                 )
-            await self._db.commit()
+        await self._db.commit()
 
     async def close(self) -> None:
         if self._db:

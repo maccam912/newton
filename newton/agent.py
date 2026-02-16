@@ -99,7 +99,13 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             f"\n\n--- TURN INFO ---\n"
             f"Step budget: {ctx.deps.max_steps} tool calls per turn.\n"
             f"Call respond_to_user to send messages. "
-            f"Call end_turn when you are finished."
+            f"Call end_turn when you are finished.\n\n"
+            f"You have a 'notebook' core memory block that is yours to maintain. "
+            f"Use core_memory_update(block='notebook', content=...) to write to it. "
+            f"Anything you put there will be included in your system prompt on "
+            f"every future turn — use it for things you want to always have in "
+            f"mind: important patterns, ongoing tasks, reminders, or anything "
+            f"you find essential enough to keep front-and-center."
         )
         return prompt
 
@@ -295,26 +301,31 @@ async def process_turn(
         await memory.recall_mark_handled()
 
         # Run the agent — pydantic-ai loops internally on tool calls.
-        with atracer.start_as_current_span("agent.run"):
-            result = await agent.run(event.payload, deps=deps)
+        result = None
+        try:
+            with atracer.start_as_current_span("agent.run"):
+                result = await agent.run(event.payload, deps=deps)
+        except Exception:
+            log.exception("agent.run failed — will attempt last-chance reply")
 
-        turn_span.set_attribute("steps", deps.step)
-        turn_span.set_attribute("turn_ended", deps.turn_ended)
-        turn_span.set_attribute("output_len", len(result.output))
+        if result is not None:
+            turn_span.set_attribute("steps", deps.step)
+            turn_span.set_attribute("turn_ended", deps.turn_ended)
+            turn_span.set_attribute("output_len", len(result.output))
 
-        log.info(
-            "◀ turn end    steps=%d  ended=%s  output=%s",
-            deps.step, deps.turn_ended, result.output[:120],
-        )
+            log.info(
+                "◀ turn end    steps=%d  ended=%s  output=%s",
+                deps.step, deps.turn_ended, result.output[:120],
+            )
 
-        # Save the agent's internal summary to recall
-        await memory.recall_save(
-            "assistant", result.output, channel=event.source, handled=True
-        )
+            # Save the agent's internal summary to recall
+            await memory.recall_save(
+                "assistant", result.output, channel=event.source, handled=True
+            )
 
         # -- LAST-CHANCE RESPONSE -------------------------------------------
-        # If the agent finished without sending any response to the user,
-        # give it one more shot with explicit instructions to reply.
+        # If the agent finished without sending any response to the user
+        # (or crashed entirely), give it one more shot.
         if deps.response_count == 0:
             log.warning(
                 "agent sent 0 responses — running last-chance pass for %s",
@@ -334,13 +345,16 @@ async def process_turn(
                 f"reply, then call end_turn.\n\n"
                 f"Original message: {event.payload}"
             )
-            with atracer.start_as_current_span("agent.last_chance"):
-                result = await agent.run(last_chance_prompt, deps=deps)
+            try:
+                with atracer.start_as_current_span("agent.last_chance"):
+                    result = await agent.run(last_chance_prompt, deps=deps)
 
-            log.info(
-                "last-chance pass done  responses=%d  output=%s",
-                deps.response_count, result.output[:120],
-            )
+                log.info(
+                    "last-chance pass done  responses=%d  output=%s",
+                    deps.response_count, result.output[:120],
+                )
+            except Exception:
+                log.exception("last-chance pass also failed")
 
         # -- ARCHIVAL REFLECTION LOOP ------------------------------------
         # The agent MUST decide whether to archive anything from this turn.
@@ -426,5 +440,16 @@ async def run_agent_loop(
 
             for batch in groups.values():
                 merged = _merge_events(batch)
-                await process_turn(merged, memory, bus, agent, cfg)
+                try:
+                    await process_turn(merged, memory, bus, agent, cfg)
+                except Exception:
+                    log.exception(
+                        "process_turn failed for src=%s — skipping",
+                        merged.source,
+                    )
+                    # Clean up typing indicator so it doesn't stick
+                    from newton.telegram_adapter import _stop_typing
+                    chat_id = merged.metadata.get("chat_id")
+                    if chat_id:
+                        _stop_typing(chat_id)
 

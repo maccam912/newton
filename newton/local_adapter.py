@@ -15,7 +15,10 @@ async def read_stdin(bus: EventBus) -> None:
     print("[local] Type a message and press Enter. Ctrl+C to quit.\n")
 
     while True:
-        line = await loop.run_in_executor(None, input, "you> ")
+        try:
+            line = await loop.run_in_executor(None, input, "you> ")
+        except (EOFError, KeyboardInterrupt):
+            break
         if not line.strip():
             continue
         await bus.put_inbox(
