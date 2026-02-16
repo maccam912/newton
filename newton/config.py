@@ -14,8 +14,9 @@ CONFIG_PATH = Path("config.toml")
 
 
 class LLMConfig(BaseModel):
-    model: str = "openrouter/stepfun/step-3.5-flash:free"
+    model: str = "stepfun/step-3.5-flash:free"
     system_prompt: str = "You are Newton, a helpful assistant."
+    reasoning_effort: str = "low"  # "low", "medium", or "high"
 
 
 class TelegramConfig(BaseModel):
@@ -28,7 +29,7 @@ class SchedulerConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     db_path: str = "memory.db"
-    embedding_model: str = "openrouter/openai/text-embedding-3-small"
+    embedding_model: str = "openai/text-embedding-3-small"
     recall_window: int = 10        # recent messages to include in context
     archival_search_k: int = 5     # archival results per query
 
@@ -40,6 +41,8 @@ class AgentConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Configuration for external tools."""
     searxng: dict[str, str | int] = {}  # e.g. {"base_url": "...", "max_results": 5}
+    browser: dict[str, str | bool] = {}  # e.g. {"browser": "chromium", "headless": true}
+    scripts: dict[str, str | int] = {}   # e.g. {"max_timeout": 300, "max_output_chars": 10000}
 
 
 class Config(BaseModel):

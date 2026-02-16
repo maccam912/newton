@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai_litellm import LiteLLMModel
+from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
 from newton.config import Config
 from newton.context import build_system_prompt
 from newton.events import Event, EventBus, EventKind, ColorFormatter
 from newton.memory import MemoryStore
+from newton.tools.browser import create_browser_server
 from opentelemetry import trace
 from newton.tracing import get_tracer
 
@@ -73,10 +74,16 @@ def _step_tag(deps: AgentDeps) -> str:
 
 def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     """Build the agent with memory, communication, and control-flow tools."""
-    model = LiteLLMModel(cfg.llm.model)
+    model = OpenRouterModel(cfg.llm.model)
+    browser_server = create_browser_server(cfg)
+    model_settings = OpenRouterModelSettings(
+        openrouter_reasoning={"effort": cfg.llm.reasoning_effort},
+    )
     agent: Agent[AgentDeps, str] = Agent(
         model,
         deps_type=AgentDeps,
+        toolsets=[browser_server],
+        model_settings=model_settings,
     )
 
     # -- Dynamic system prompt built from memory each turn -----------------
@@ -96,8 +103,10 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
 
     # -- Register external tools -------------------------------------------
     import newton.tools.searxng
+    import newton.tools.scripts
 
     newton.tools.searxng.register(agent)
+    newton.tools.scripts.register(agent)
 
     # == Control-flow tools ================================================
 
@@ -214,18 +223,26 @@ class ArchivalDecision(BaseModel):
         description="The standalone fact or knowledge to be archived. Required if should_archive is True."
     )
 
-archival_agent = Agent(
-    LiteLLMModel("openrouter/stepfun/step-3.5-flash:free"), # Use a cheap/fast model or same as main
-    output_type=ArchivalDecision,
-    deps_type=AgentDeps,
-    system_prompt=(
-        "You are a memory manager. Analyze the conversation turn. "
-        "Extract any PERMANENT facts, user preferences, or important context that "
-        "should be stored in long-term archival memory. "
-        "Ignore usage instructions, casual greetings, or temporary state. "
-        "If nothing is worth saving, set should_archive=False."
-    ),
-)
+_archival_agent: Agent[AgentDeps, ArchivalDecision] | None = None
+
+
+def _get_archival_agent() -> Agent[AgentDeps, ArchivalDecision]:
+    """Lazy-init the reflection agent (avoids requiring API key at import)."""
+    global _archival_agent
+    if _archival_agent is None:
+        _archival_agent = Agent(
+            OpenRouterModel("stepfun/step-3.5-flash:free"),
+            output_type=ArchivalDecision,
+            deps_type=AgentDeps,
+            system_prompt=(
+                "You are a memory manager. Analyze the conversation turn. "
+                "Extract any PERMANENT facts, user preferences, or important context that "
+                "should be stored in long-term archival memory. "
+                "Ignore usage instructions, casual greetings, or temporary state. "
+                "If nothing is worth saving, set should_archive=False."
+            ),
+        )
+    return _archival_agent
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +322,7 @@ async def process_turn(
             )
 
             try:
-                reflection = await archival_agent.run(transcript, deps=deps)
+                reflection = await _get_archival_agent().run(transcript, deps=deps)
                 decision = reflection.output
 
                 if decision.should_archive and decision.content:
@@ -326,12 +343,13 @@ async def run_agent_loop(
     """Pull events from the inbox, run the agent with step tracking."""
     agent = create_agent(cfg)
 
-    while True:
-        event = await bus.inbox.get()
+    async with agent:  # opens MCP server connections (e.g. Playwright)
+        while True:
+            event = await bus.inbox.get()
 
-        # Skip non-message events (e.g. heartbeats)
-        if event.kind != EventKind.MESSAGE:
-            continue
+            # Skip non-message events (e.g. heartbeats)
+            if event.kind != EventKind.MESSAGE:
+                continue
 
-        await process_turn(event, memory, bus, agent, cfg)
+            await process_turn(event, memory, bus, agent, cfg)
 

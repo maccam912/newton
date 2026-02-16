@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 
 import aiosqlite
 import sqlite_vec
-import litellm
+import os
+
+from openai import AsyncOpenAI
 
 from newton.config import Config
 from newton.tracing import get_tracer
@@ -29,11 +31,26 @@ def _serialize_embedding(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
+_openai_client: AsyncOpenAI | None = None
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    """Lazy-init an AsyncOpenAI client pointed at OpenRouter."""
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ["OPENROUTER_API_KEY"],
+        )
+    return _openai_client
+
+
 async def _embed(text: str, model: str) -> list[float]:
-    """Get an embedding vector via litellm."""
+    """Get an embedding vector via OpenRouter (OpenAI-compatible API)."""
     with tracer.start_as_current_span("embed", attributes={"model": model, "text_len": len(text)}):
-        resp = await litellm.aembedding(model=model, input=[text])
-        return resp.data[0]["embedding"]
+        client = _get_openai_client()
+        resp = await client.embeddings.create(model=model, input=[text])
+        return list(resp.data[0].embedding)
 
 
 # ---------------------------------------------------------------------------
