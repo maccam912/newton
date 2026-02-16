@@ -32,7 +32,7 @@ async def main() -> None:
         tg.create_task(send_replies(bus, cfg))
         tg.create_task(read_stdin(bus))
         tg.create_task(print_replies(bus))
-        tg.create_task(start_scheduler(bus, cfg))
+        tg.create_task(start_scheduler(bus, cfg, memory))
 
 
 if __name__ == "__main__":

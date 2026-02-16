@@ -8,7 +8,9 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
 from newton.config import Config
-from newton.context import build_system_prompt
+from datetime import datetime
+
+from newton.context import build_heartbeat_prompt, build_system_prompt
 from newton.events import Event, EventBus, EventKind, ColorFormatter
 from newton.memory import MemoryStore
 from newton.tools.browser import create_browser_server
@@ -56,6 +58,7 @@ class AgentDeps:
         self.event_source: str = ""
         self.turn_ended: bool = False
         self.response_count: int = 0
+        self.is_heartbeat: bool = False
 
 
 def _step_tag(deps: AgentDeps) -> str:
@@ -92,6 +95,16 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
 
     @agent.system_prompt
     async def dynamic_prompt(ctx: RunContext[AgentDeps]) -> str:
+        if ctx.deps.is_heartbeat:
+            prompt = await build_heartbeat_prompt(ctx.deps.cfg, ctx.deps.memory)
+            prompt += (
+                f"\n\n--- TURN INFO ---\n"
+                f"Step budget: {ctx.deps.max_steps} tool calls per turn.\n"
+                f"Call respond_to_user to send messages. "
+                f"Call end_turn when you are finished."
+            )
+            return prompt
+
         prompt = await build_system_prompt(
             ctx.deps.cfg, ctx.deps.memory, ctx.deps.current_message
         )
@@ -217,8 +230,72 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             return f"No detailed info stored for '{key}'." + _step_tag(ctx.deps)
         return details + _step_tag(ctx.deps)
 
-    return agent
+    # == Reminder tools ====================================================
 
+    @agent.tool
+    async def create_reminder(
+        ctx: RunContext[AgentDeps],
+        message: str,
+        fire_at: str,
+        channel: str = "",
+        interval_minutes: int | None = None,
+        end_at: str | None = None,
+    ) -> str:
+        """Create a scheduled reminder.
+
+        Args:
+            message: What to remind about.
+            fire_at: When to fire (ISO 8601 UTC, e.g. '2026-02-16T15:00:00+00:00').
+            channel: Channel to notify (e.g. 'telegram', 'local'). Empty for internal.
+            interval_minutes: If set, reminder recurs every N minutes.
+            end_at: If set with interval_minutes, stop recurring after this datetime.
+        """
+        fire_dt = datetime.fromisoformat(fire_at)
+        end_dt = datetime.fromisoformat(end_at) if end_at else None
+        metadata = dict(ctx.deps.event_metadata) if ctx.deps.event_metadata else {}
+        row_id = await ctx.deps.memory.create_reminder(
+            message=message,
+            fire_at=fire_dt,
+            channel=channel,
+            metadata=metadata,
+            interval_minutes=interval_minutes,
+            end_at=end_dt,
+        )
+        kind = "one-time"
+        if interval_minutes:
+            kind = f"recurring every {interval_minutes}min"
+            if end_dt:
+                kind += f" until {end_at}"
+        log.info("⏰ create_reminder #%d (%s): %s at %s", row_id, kind, message[:60], fire_at)
+        return f"Reminder #{row_id} created ({kind}): '{message}' at {fire_at}" + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def list_reminders(ctx: RunContext[AgentDeps]) -> str:
+        """List all active reminders."""
+        log.debug("⏰ list_reminders")
+        reminders = await ctx.deps.memory.list_active_reminders()
+        if not reminders:
+            return "No active reminders." + _step_tag(ctx.deps)
+        lines = []
+        for r in reminders:
+            line = f"#{r['id']}: '{r['message']}' | next: {r['fire_at']}"
+            if r.get("interval_minutes"):
+                line += f" | every {r['interval_minutes']}min"
+            if r.get("end_at"):
+                line += f" | until {r['end_at']}"
+            if r.get("channel"):
+                line += f" | -> {r['channel']}"
+            lines.append(line)
+        return "\n".join(lines) + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def cancel_reminder(ctx: RunContext[AgentDeps], reminder_id: int) -> str:
+        """Cancel (deactivate) a reminder by its ID."""
+        log.info("⏰ cancel_reminder(%d)", reminder_id)
+        success = await ctx.deps.memory.cancel_reminder(reminder_id)
+        if success:
+            return f"Reminder #{reminder_id} cancelled." + _step_tag(ctx.deps)
+        return f"Reminder #{reminder_id} not found or already inactive." + _step_tag(ctx.deps)
 
     return agent
 
@@ -381,6 +458,82 @@ async def process_turn(
                 trace.get_current_span().record_exception(e)
 
 
+async def process_heartbeat(
+    event: Event,
+    memory: MemoryStore,
+    bus: EventBus,
+    agent: Agent[AgentDeps, str],
+    cfg: Config,
+) -> None:
+    """Process a heartbeat with lightweight context and tight step budget."""
+    deps = AgentDeps(memory=memory, cfg=cfg, bus=bus)
+    deps.current_message = ""
+    deps.step = 0
+    deps.turn_ended = False
+    deps.response_count = 0
+    deps.event_source = "scheduler"
+    deps.event_metadata = {}
+    deps.is_heartbeat = True
+    deps.max_steps = min(cfg.agent.max_steps, 5)
+
+    with atracer.start_as_current_span("agent.heartbeat"):
+        log.info("💓 heartbeat processing")
+        try:
+            result = await agent.run("heartbeat", deps=deps)
+            if result:
+                await memory.recall_save(
+                    "assistant", f"[heartbeat] {result.output}",
+                    channel="scheduler", handled=True,
+                )
+                log.info("💓 heartbeat done  steps=%d  output=%s", deps.step, result.output[:80])
+        except Exception:
+            log.exception("heartbeat agent.run failed")
+
+
+async def process_reminder(
+    event: Event,
+    memory: MemoryStore,
+    bus: EventBus,
+    agent: Agent[AgentDeps, str],
+    cfg: Config,
+) -> None:
+    """Process a fired reminder — the agent sees it and can act on it."""
+    deps = AgentDeps(memory=memory, cfg=cfg, bus=bus)
+    deps.current_message = event.payload
+    deps.step = 0
+    deps.turn_ended = False
+    deps.response_count = 0
+    deps.event_source = "scheduler"
+    deps.event_metadata = event.metadata
+    deps.max_steps = min(cfg.agent.max_steps, 8)
+
+    prompt = f"A scheduled reminder has fired.\nReminder message: {event.payload}\n"
+    if event.reply_to:
+        prompt += (
+            f"Target channel: {event.reply_to}\n"
+            f"You should send a message to the '{event.reply_to}' channel "
+            f"about this reminder using respond_to_user, then call end_turn.\n"
+        )
+    else:
+        prompt += "This is an internal reminder. Take any appropriate action, then call end_turn.\n"
+
+    with atracer.start_as_current_span(
+        "agent.reminder",
+        attributes={"reminder_message": event.payload[:100]},
+    ):
+        log.info("⏰ reminder processing: %s", event.payload[:100])
+        try:
+            result = await agent.run(prompt, deps=deps)
+            if result:
+                await memory.recall_save(
+                    "assistant", f"[reminder] {result.output}",
+                    channel="scheduler", handled=True,
+                )
+                log.info("⏰ reminder done  steps=%d  output=%s", deps.step, result.output[:80])
+        except Exception:
+            log.exception("reminder agent.run failed")
+
+
 def _batch_key(event: Event) -> str:
     """Group key: source + chat_id (so telegram chats batch separately)."""
     chat_id = event.metadata.get("chat_id", "")
@@ -422,16 +575,38 @@ async def run_agent_loop(
             # Block until at least one event arrives
             event = await bus.inbox.get()
 
-            # Skip non-message events (e.g. heartbeats)
+            # --- HEARTBEAT: lightweight processing, no batching ---
+            if event.kind == EventKind.HEARTBEAT:
+                try:
+                    await process_heartbeat(event, memory, bus, agent, cfg)
+                except Exception:
+                    log.exception("heartbeat processing failed")
+                continue
+
+            # --- REMINDER: process individually, no batching ---
+            if event.kind == EventKind.REMINDER:
+                try:
+                    await process_reminder(event, memory, bus, agent, cfg)
+                except Exception:
+                    log.exception("reminder processing failed")
+                continue
+
+            # --- Skip non-actionable events ---
             if event.kind != EventKind.MESSAGE:
                 continue
 
             # Drain any additional queued events that arrived while we were busy
             pending: list[Event] = [event]
+            requeue: list[Event] = []
             while not bus.inbox.empty():
                 extra = bus.inbox.get_nowait()
                 if extra.kind == EventKind.MESSAGE:
                     pending.append(extra)
+                else:
+                    # Re-queue heartbeats/reminders so they aren't lost
+                    requeue.append(extra)
+            for ev in requeue:
+                await bus.inbox.put(ev)
 
             # Group by source+chat_id, merge each group, process each turn
             groups: dict[str, list[Event]] = {}

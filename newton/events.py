@@ -57,6 +57,7 @@ class EventKind(str, Enum):
     MESSAGE = "message"        # a chat message arrived
     HEARTBEAT = "heartbeat"    # periodic pulse
     RESPONSE = "response"      # agent is replying
+    REMINDER = "reminder"      # scheduled reminder fired
 
 
 class Event(BaseModel):

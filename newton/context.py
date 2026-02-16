@@ -83,3 +83,69 @@ async def build_system_prompt(
         prompt = "\n\n".join(parts)
         span.set_attribute("prompt_len", len(prompt))
         return prompt
+
+
+async def build_heartbeat_prompt(
+    cfg: Config,
+    memory: MemoryStore,
+) -> str:
+    """Build a lightweight system prompt for heartbeat processing.
+
+    Compared to the full prompt this skips the archival search on incoming
+    message (there is none) and uses a shorter recall window.  Instead it
+    does targeted searches for heartbeat/remember-related memories and
+    includes an active-reminders summary.
+    """
+
+    with tracer.start_as_current_span("build_heartbeat_prompt") as span:
+        parts: list[str] = []
+
+        # 1. Base instructions + heartbeat guidance
+        parts.append(
+            f"{cfg.llm.system_prompt}\n\n"
+            "This is a HEARTBEAT event — time has passed since your last activity. "
+            "You are NOT responding to a user message. Use this opportunity to:\n"
+            "- Check if you have any pending tasks or proactive things to do\n"
+            "- Act on anything relevant from your memories\n"
+            "- If there is nothing to do, just call end_turn\n"
+            "Keep actions minimal. Do NOT send messages to users unless you have "
+            "a specific reason (e.g., a proactive notification you planned)."
+        )
+
+        # 2. Core memory (always present)
+        blocks = await memory.get_core_blocks()
+        if blocks:
+            parts.append("\n--- CORE MEMORY ---")
+            for block, content in blocks.items():
+                parts.append(f"[{block}]\n{content}")
+
+        # 3. Targeted archival search for heartbeat-relevant memories
+        for query in ("heartbeat reminder", "remember to do"):
+            results = await memory.archival_search(query, k=3)
+            if results:
+                parts.append(f"\n--- MEMORIES matching '{query}' ---")
+                for i, text in enumerate(results, 1):
+                    parts.append(f"{i}. {text}")
+
+        # 4. Active reminders summary
+        active = await memory.list_active_reminders()
+        if active:
+            parts.append("\n--- ACTIVE REMINDERS ---")
+            for r in active:
+                line = f"#{r['id']}: '{r['message']}' next: {r['fire_at']}"
+                if r.get("channel"):
+                    line += f" -> {r['channel']}"
+                parts.append(line)
+
+        # 5. Short recall (last 3 messages only)
+        history = await memory.recall_recent(n=3)
+        if history:
+            parts.append("\n--- RECENT ACTIVITY (last 3) ---")
+            for msg in history:
+                role = "User" if msg["role"] == "user" else "Newton"
+                ts = msg.get("timestamp", "")[:19].replace("T", " ")
+                parts.append(f"[{ts}] {role}: {msg['content'][:200]}")
+
+        prompt = "\n\n".join(parts)
+        span.set_attribute("prompt_len", len(prompt))
+        return prompt
