@@ -2,19 +2,75 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 
 from newton.config import Config
-from newton.events import Event, EventBus, EventKind
+from newton.events import Event, EventBus, EventKind, ColorFormatter
 
 CHANNEL = "telegram"
 
+# ---------------------------------------------------------------------------
+# Logger
+# ---------------------------------------------------------------------------
+
+def _make_logger(name: str) -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(ColorFormatter())
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+    return logger
+
+log = _make_logger("newton.telegram")
+
+# ---------------------------------------------------------------------------
+# Typing-indicator bookkeeping
+# ---------------------------------------------------------------------------
+
+# chat_ids currently waiting for a reply — typing action is sent in a loop
+_typing_chats: dict[str, asyncio.Task] = {}
+
+
+async def _typing_loop(bot, chat_id: str) -> None:
+    """Send 'typing' action every 4s until cancelled."""
+    try:
+        while True:
+            await bot.send_chat_action(chat_id=int(chat_id), action="typing")
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
+
+def _start_typing(bot, chat_id: str) -> None:
+    """Begin showing 'typing…' for a chat (idempotent)."""
+    if chat_id in _typing_chats:
+        return  # already typing
+    _typing_chats[chat_id] = asyncio.create_task(_typing_loop(bot, chat_id))
+    log.debug("typing indicator ON for chat %s", chat_id)
+
+
+def _stop_typing(chat_id: str) -> None:
+    """Cancel the typing indicator for a chat."""
+    task = _typing_chats.pop(chat_id, None)
+    if task:
+        task.cancel()
+        log.debug("typing indicator OFF for chat %s", chat_id)
+
+
+# ---------------------------------------------------------------------------
+# Inbound — polling
+# ---------------------------------------------------------------------------
 
 async def start_telegram(bus: EventBus, cfg: Config) -> None:
     """Start the Telegram bot and funnel messages into the inbox."""
     if not cfg.telegram.bot_token:
-        print("[telegram] No bot token configured — skipping.")
+        log.warning("No bot token configured — skipping Telegram adapter.")
         return
 
     # Track every chat we've seen so the agent can browse them later
@@ -27,9 +83,26 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
             return
         chat = update.message.chat
         chat_id = str(chat.id)
+        user = update.message.from_user
 
         # Remember this chat
-        known_chats[chat_id] = chat.title or chat.full_name or chat_id
+        chat_label = chat.title or chat.full_name or chat_id
+        known_chats[chat_id] = chat_label
+
+        # --- detailed inbound log ---
+        log.info(
+            "MSG IN  chat_id=%-14s  type=%-12s  title=%s",
+            chat_id, chat.type, chat_label,
+        )
+        if user:
+            log.info(
+                "        from user  id=%-14s  username=%-16s  name=%s",
+                user.id, user.username or "(none)", user.full_name,
+            )
+        log.info("        text: %s", (update.message.text or "")[:200])
+
+        # Start typing indicator while the agent works
+        _start_typing(app.bot, chat_id)
 
         await bus.put_inbox(
             Event(
@@ -41,8 +114,13 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
         )
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    log.info("Telegram polling started")
     await app.run_polling()
 
+
+# ---------------------------------------------------------------------------
+# Outbound — send replies
+# ---------------------------------------------------------------------------
 
 async def send_replies(bus: EventBus, cfg: Config) -> None:
     """Pull response events from this channel's outbox and send on Telegram."""
@@ -57,4 +135,7 @@ async def send_replies(bus: EventBus, cfg: Config) -> None:
         event = await outbox.get()
         chat_id = event.metadata.get("chat_id")
         if chat_id:
+            # Stop typing now that we have a reply
+            _stop_typing(chat_id)
+            log.info("MSG OUT chat_id=%-14s  len=%d", chat_id, len(event.payload))
             await bot.send_message(chat_id=chat_id, text=event.payload)
