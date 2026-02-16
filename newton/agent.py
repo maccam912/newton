@@ -110,6 +110,7 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
         )
         prompt += (
             f"\n\n--- TURN INFO ---\n"
+            f"This message arrived on channel: {ctx.deps.event_source}\n"
             f"Step budget: {ctx.deps.max_steps} tool calls per turn.\n"
             f"Call respond_to_user to send messages. "
             f"Call end_turn when you are finished.\n\n"

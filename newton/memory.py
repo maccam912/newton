@@ -399,29 +399,30 @@ class MemoryStore:
 
     async def get_due_reminders(self) -> list[dict]:
         """Return all active reminders whose fire_at <= now (UTC)."""
-        with tracer.start_as_current_span("memory.get_due_reminders") as span:
-            assert self._db
-            now = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                "SELECT id, message, channel, metadata, fire_at, interval_minutes, end_at "
-                "FROM reminders WHERE active = 1 AND fire_at <= ?",
-                (now,),
-            )
-            rows = await cursor.fetchall()
-            result = [
-                {
-                    "id": row[0],
-                    "message": row[1],
-                    "channel": row[2],
-                    "metadata": row[3],
-                    "fire_at": row[4],
-                    "interval_minutes": row[5],
-                    "end_at": row[6],
-                }
-                for row in rows
-            ]
-            span.set_attribute("result_count", len(result))
-            return result
+        assert self._db
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            "SELECT id, message, channel, metadata, fire_at, interval_minutes, end_at "
+            "FROM reminders WHERE active = 1 AND fire_at <= ?",
+            (now,),
+        )
+        rows = await cursor.fetchall()
+        result = [
+            {
+                "id": row[0],
+                "message": row[1],
+                "channel": row[2],
+                "metadata": row[3],
+                "fire_at": row[4],
+                "interval_minutes": row[5],
+                "end_at": row[6],
+            }
+            for row in rows
+        ]
+        if result:
+            with tracer.start_as_current_span("memory.get_due_reminders") as span:
+                span.set_attribute("result_count", len(result))
+        return result
 
     async def advance_or_deactivate_reminder(self, reminder_id: int) -> None:
         """After firing: advance recurring reminders or deactivate one-time ones."""
