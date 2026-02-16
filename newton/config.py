@@ -25,6 +25,7 @@ class TelegramConfig(BaseModel):
 
 class SchedulerConfig(BaseModel):
     heartbeat_minutes: int = 60
+    reminder_check_seconds: int = 60  # how often to poll for due reminders
 
 
 class MemoryConfig(BaseModel):

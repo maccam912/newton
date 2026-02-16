@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import struct
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import sqlite_vec
@@ -115,6 +115,22 @@ class MemoryStore:
                 timestamp TEXT NOT NULL,
                 handled   INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                message          TEXT NOT NULL,
+                channel          TEXT NOT NULL DEFAULT '',
+                metadata         TEXT NOT NULL DEFAULT '{}',
+                fire_at          TEXT NOT NULL,
+                interval_minutes INTEGER,
+                end_at           TEXT,
+                active           INTEGER NOT NULL DEFAULT 1,
+                created          TEXT NOT NULL,
+                last_fired       TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_active_fire
+                ON reminders (active, fire_at);
         """)
         await self._db.commit()
 
@@ -343,3 +359,145 @@ class MemoryStore:
             ]
             span.set_attribute("result_count", len(result))
             return result
+
+    # ------------------------------------------------------------------
+    # Reminders
+    # ------------------------------------------------------------------
+
+    async def create_reminder(
+        self,
+        message: str,
+        fire_at: datetime,
+        channel: str = "",
+        metadata: dict[str, str] | None = None,
+        interval_minutes: int | None = None,
+        end_at: datetime | None = None,
+    ) -> int:
+        """Create a new scheduled reminder. Returns the row id."""
+        with tracer.start_as_current_span("memory.create_reminder") as span:
+            assert self._db
+            now = datetime.now(timezone.utc).isoformat()
+            meta_json = json.dumps(metadata or {})
+            cursor = await self._db.execute(
+                "INSERT INTO reminders "
+                "(message, channel, metadata, fire_at, interval_minutes, end_at, active, created) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                (
+                    message,
+                    channel,
+                    meta_json,
+                    fire_at.isoformat(),
+                    interval_minutes,
+                    end_at.isoformat() if end_at else None,
+                    now,
+                ),
+            )
+            await self._db.commit()
+            row_id = cursor.lastrowid or 0
+            span.set_attribute("row_id", row_id)
+            return row_id
+
+    async def get_due_reminders(self) -> list[dict]:
+        """Return all active reminders whose fire_at <= now (UTC)."""
+        with tracer.start_as_current_span("memory.get_due_reminders") as span:
+            assert self._db
+            now = datetime.now(timezone.utc).isoformat()
+            cursor = await self._db.execute(
+                "SELECT id, message, channel, metadata, fire_at, interval_minutes, end_at "
+                "FROM reminders WHERE active = 1 AND fire_at <= ?",
+                (now,),
+            )
+            rows = await cursor.fetchall()
+            result = [
+                {
+                    "id": row[0],
+                    "message": row[1],
+                    "channel": row[2],
+                    "metadata": row[3],
+                    "fire_at": row[4],
+                    "interval_minutes": row[5],
+                    "end_at": row[6],
+                }
+                for row in rows
+            ]
+            span.set_attribute("result_count", len(result))
+            return result
+
+    async def advance_or_deactivate_reminder(self, reminder_id: int) -> None:
+        """After firing: advance recurring reminders or deactivate one-time ones."""
+        with tracer.start_as_current_span(
+            "memory.advance_reminder", attributes={"reminder_id": reminder_id}
+        ):
+            assert self._db
+            now = datetime.now(timezone.utc)
+            cursor = await self._db.execute(
+                "SELECT interval_minutes, end_at, fire_at FROM reminders WHERE id = ?",
+                (reminder_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return
+
+            interval, end_at_str, fire_at_str = row
+            fire_at = datetime.fromisoformat(fire_at_str)
+
+            if interval is None:
+                # One-time: deactivate
+                await self._db.execute(
+                    "UPDATE reminders SET active = 0, last_fired = ? WHERE id = ?",
+                    (now.isoformat(), reminder_id),
+                )
+            else:
+                # Recurring: skip forward past now
+                delta = timedelta(minutes=interval)
+                next_fire = fire_at
+                while next_fire <= now:
+                    next_fire += delta
+
+                if end_at_str and next_fire > datetime.fromisoformat(end_at_str):
+                    await self._db.execute(
+                        "UPDATE reminders SET active = 0, last_fired = ? WHERE id = ?",
+                        (now.isoformat(), reminder_id),
+                    )
+                else:
+                    await self._db.execute(
+                        "UPDATE reminders SET fire_at = ?, last_fired = ? WHERE id = ?",
+                        (next_fire.isoformat(), now.isoformat(), reminder_id),
+                    )
+            await self._db.commit()
+
+    async def list_active_reminders(self) -> list[dict]:
+        """Return all active reminders."""
+        with tracer.start_as_current_span("memory.list_active_reminders") as span:
+            assert self._db
+            cursor = await self._db.execute(
+                "SELECT id, message, channel, fire_at, interval_minutes, end_at "
+                "FROM reminders WHERE active = 1 ORDER BY fire_at"
+            )
+            rows = await cursor.fetchall()
+            result = [
+                {
+                    "id": row[0],
+                    "message": row[1],
+                    "channel": row[2],
+                    "fire_at": row[3],
+                    "interval_minutes": row[4],
+                    "end_at": row[5],
+                }
+                for row in rows
+            ]
+            span.set_attribute("result_count", len(result))
+            return result
+
+    async def cancel_reminder(self, reminder_id: int) -> bool:
+        """Deactivate a reminder by ID. Returns True if found and cancelled."""
+        with tracer.start_as_current_span(
+            "memory.cancel_reminder", attributes={"reminder_id": reminder_id}
+        ):
+            assert self._db
+            cursor = await self._db.execute(
+                "UPDATE reminders SET active = 0 WHERE id = ? AND active = 1",
+                (reminder_id,),
+            )
+            await self._db.commit()
+            return cursor.rowcount > 0
