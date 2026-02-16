@@ -301,6 +301,82 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             return f"Reminder #{reminder_id} cancelled." + _step_tag(ctx.deps)
         return f"Reminder #{reminder_id} not found or already inactive." + _step_tag(ctx.deps)
 
+    # == Skill tools ====================================================
+
+    @agent.tool
+    async def skill_invoke(ctx: RunContext[AgentDeps], name: str) -> str:
+        """Load the full instructions for a skill by name.
+        Use this when you need to follow a skill's detailed guidance."""
+        log.info("🎯 skill_invoke(%s)", name)
+        skill = await ctx.deps.memory.skill_get(name)
+        if skill is None:
+            return f"Skill '{name}' not found." + _step_tag(ctx.deps)
+        return (
+            f"=== SKILL: {skill['name']} ===\n"
+            f"{skill['full_prompt']}"
+        ) + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def skill_create(
+        ctx: RunContext[AgentDeps], name: str, description: str, full_prompt: str
+    ) -> str:
+        """Create a new skill with a name, short description, and full prompt.
+
+        Args:
+            name: Unique skill identifier (lowercase, no spaces — use hyphens).
+            description: One-line summary shown in the skills menu.
+            full_prompt: Detailed instructions loaded when the skill is invoked.
+        """
+        log.info("🎯 skill_create(%s)", name)
+        core_blocks = await ctx.deps.memory.get_core_blocks()
+        if name in core_blocks:
+            return (
+                f"Cannot create skill '{name}' — conflicts with a core memory block name."
+            ) + _step_tag(ctx.deps)
+        try:
+            await ctx.deps.memory.skill_create(name, description, full_prompt)
+        except ValueError as e:
+            return str(e) + _step_tag(ctx.deps)
+        return f"Skill '{name}' created." + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def skill_update(
+        ctx: RunContext[AgentDeps],
+        name: str,
+        description: str = "",
+        full_prompt: str = "",
+    ) -> str:
+        """Update an existing skill's description and/or full_prompt.
+        Only non-empty fields are updated."""
+        log.info("🎯 skill_update(%s)", name)
+        updated = await ctx.deps.memory.skill_update(
+            name,
+            description=description or None,
+            full_prompt=full_prompt or None,
+        )
+        if not updated:
+            return f"Skill '{name}' not found." + _step_tag(ctx.deps)
+        return f"Skill '{name}' updated." + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def skill_delete(ctx: RunContext[AgentDeps], name: str) -> str:
+        """Delete a skill by name."""
+        log.info("🎯 skill_delete(%s)", name)
+        deleted = await ctx.deps.memory.skill_delete(name)
+        if not deleted:
+            return f"Skill '{name}' not found." + _step_tag(ctx.deps)
+        return f"Skill '{name}' deleted." + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def skill_list_tool(ctx: RunContext[AgentDeps]) -> str:
+        """List all available skills with their descriptions."""
+        log.debug("🎯 skill_list")
+        skills = await ctx.deps.memory.skill_list()
+        if not skills:
+            return "No skills defined yet." + _step_tag(ctx.deps)
+        lines = [f"- {s['name']}: {s['description']}" for s in skills]
+        return "\n".join(lines) + _step_tag(ctx.deps)
+
     return agent
 
 

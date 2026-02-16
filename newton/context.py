@@ -56,7 +56,19 @@ async def build_system_prompt(
             else:
                 parts.append("\n--- KNOWN USERS ---\nNo known users yet. Use user_upsert to remember new users.")
 
-        # 4. Archival search — only if there's something to search for
+        # 4. Available skills — name + description only (progressive disclosure)
+        with tracer.start_as_current_span("context.skills"):
+            skills = await memory.skill_list()
+            if skills:
+                parts.append("\n--- AVAILABLE SKILLS ---")
+                parts.append(
+                    "Use skill_invoke(name) to load full instructions for a skill. "
+                    "Only invoke a skill when the user's request clearly matches it."
+                )
+                for s in skills:
+                    parts.append(f"- {s['name']}: {s['description']}")
+
+        # 5. Archival search — only if there's something to search for
         if incoming_message.strip():
             with tracer.start_as_current_span("context.archival_search"):
                 results = await memory.archival_search(
@@ -67,7 +79,7 @@ async def build_system_prompt(
                     for i, text in enumerate(results, 1):
                         parts.append(f"{i}. {text}")
 
-        # 5. Recent conversation history (ordered by timestamp)
+        # 6. Recent conversation history (ordered by timestamp)
         with tracer.start_as_current_span("context.recall"):
             history = await memory.recall_recent(n=cfg.memory.recall_window)
             if history:
@@ -119,7 +131,18 @@ async def build_heartbeat_prompt(
             for block, content in blocks.items():
                 parts.append(f"[{block}]\n{content}")
 
-        # 3. Targeted archival search for heartbeat-relevant memories
+        # 3. Available skills (progressive disclosure — names only)
+        skills = await memory.skill_list()
+        if skills:
+            parts.append("\n--- AVAILABLE SKILLS ---")
+            parts.append(
+                "Use skill_invoke(name) to load full instructions for a skill. "
+                "Only invoke a skill when the user's request clearly matches it."
+            )
+            for s in skills:
+                parts.append(f"- {s['name']}: {s['description']}")
+
+        # 4. Targeted archival search for heartbeat-relevant memories
         for query in ("heartbeat reminder", "remember to do"):
             results = await memory.archival_search(query, k=3)
             if results:
@@ -127,7 +150,7 @@ async def build_heartbeat_prompt(
                 for i, text in enumerate(results, 1):
                     parts.append(f"{i}. {text}")
 
-        # 4. Active reminders summary
+        # 5. Active reminders summary
         active = await memory.list_active_reminders()
         if active:
             parts.append("\n--- ACTIVE REMINDERS ---")
@@ -137,7 +160,7 @@ async def build_heartbeat_prompt(
                     line += f" -> {r['channel']}"
                 parts.append(line)
 
-        # 5. Short recall (last 3 messages only)
+        # 6. Short recall (last 3 messages only)
         history = await memory.recall_recent(n=3)
         if history:
             parts.append("\n--- RECENT ACTIVITY (last 3) ---")
