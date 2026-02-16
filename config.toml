@@ -58,3 +58,7 @@ headless = true
 [tools.scripts]
 max_timeout = 300         # hard ceiling for timeout_seconds param
 max_output_chars = 10000  # truncate stdout/stderr beyond this
+
+[tools.bash]
+max_timeout = 120         # hard ceiling for timeout_seconds param
+max_output_chars = 10000  # truncate stdout/stderr beyond this
