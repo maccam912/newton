@@ -2,7 +2,6 @@
 
 import asyncio
 
-import litellm
 import logfire
 
 from newton.config import load_config
@@ -12,9 +11,6 @@ from newton.agent import run_agent_loop
 from newton.telegram_adapter import start_telegram, send_replies
 from newton.local_adapter import read_stdin, print_replies
 from newton.scheduler import start_scheduler
-
-# Suppress litellm noise
-litellm.suppress_debug_info = True
 
 # Logfire — sets up OTEL TracerProvider + sends traces if token present
 logfire.configure(send_to_logfire="if-token-present", console=False)
