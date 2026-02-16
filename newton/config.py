@@ -44,6 +44,7 @@ class ToolsConfig(BaseModel):
     searxng: dict[str, str | int] = {}  # e.g. {"base_url": "...", "max_results": 5}
     browser: dict[str, str | bool] = {}  # e.g. {"browser": "chromium", "headless": true}
     scripts: dict[str, str | int] = {}   # e.g. {"max_timeout": 300, "max_output_chars": 10000}
+    bash: dict[str, str | int] = {}      # e.g. {"max_timeout": 120, "max_output_chars": 10000}
 
 
 class Config(BaseModel):

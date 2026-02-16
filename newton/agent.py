@@ -130,6 +130,9 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     newton.tools.searxng.register(agent)
     newton.tools.scripts.register(agent)
 
+    import newton.tools.bash
+    newton.tools.bash.register(agent)
+
     # == Control-flow tools ================================================
 
     @agent.tool
