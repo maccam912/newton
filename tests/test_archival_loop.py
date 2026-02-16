@@ -18,9 +18,13 @@ async def test_process_turn_archives_content(cfg):
     mock_bus = AsyncMock(spec=EventBus)
     mock_bus.put_outbox = AsyncMock()
 
-    # Mock the main agent
+    # Mock the main agent — simulate that it sent a response (increments response_count)
     mock_agent = AsyncMock()
-    mock_agent.run.return_value = MagicMock(output="Main agent response")
+    def _fake_run(prompt, deps=None):
+        if deps is not None:
+            deps.response_count = 1
+        return MagicMock(output="Main agent response")
+    mock_agent.run.side_effect = _fake_run
 
     # Mock atracer to avoid OTEL issues
     with patch("newton.agent.atracer") as mock_tracer:
@@ -59,9 +63,13 @@ async def test_process_turn_skips_archive(cfg):
     mock_memory = AsyncMock(spec=MemoryStore)
     mock_bus = AsyncMock(spec=EventBus)
 
-    # Mock the main agent
+    # Mock the main agent — simulate that it sent a response
     mock_agent = AsyncMock()
-    mock_agent.run.return_value = MagicMock(output="Main agent response")
+    def _fake_run(prompt, deps=None):
+        if deps is not None:
+            deps.response_count = 1
+        return MagicMock(output="Main agent response")
+    mock_agent.run.side_effect = _fake_run
 
     # Mock atracer
     with patch("newton.agent.atracer") as mock_tracer:

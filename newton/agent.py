@@ -53,7 +53,9 @@ class AgentDeps:
         self.step: int = 0
         self.max_steps: int = cfg.agent.max_steps
         self.event_metadata: dict[str, str] = {}
+        self.event_source: str = ""
         self.turn_ended: bool = False
+        self.response_count: int = 0
 
 
 def _step_tag(deps: AgentDeps) -> str:
@@ -115,7 +117,14 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
         """Signal that you are done processing this turn.
         Call this when you have nothing more to do."""
         ctx.deps.turn_ended = True
-        log.info("🛑 end_turn called")
+
+        # Cancel typing indicator for the originating chat
+        from newton.telegram_adapter import _stop_typing
+        chat_id = ctx.deps.event_metadata.get("chat_id")
+        if chat_id:
+            _stop_typing(chat_id)
+
+        log.info("🛑 end_turn called  (responses_sent=%d)", ctx.deps.response_count)
         return "Turn ended. Produce a brief internal summary of what you did."
 
     @agent.tool
@@ -124,6 +133,7 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     ) -> str:
         """Send a visible message to a channel (e.g. 'local', 'telegram').
         You can respond to any channel, not just the one that sent the message."""
+        ctx.deps.response_count += 1
         log.info("💬 respond_to_user → %s: %s", channel, message[:120])
         await ctx.deps.bus.put_outbox(
             Event(
@@ -275,6 +285,8 @@ async def process_turn(
         deps.current_message = event.payload
         deps.step = 0
         deps.turn_ended = False
+        deps.response_count = 0
+        deps.event_source = event.source
         deps.event_metadata = event.metadata
 
         # Mark all pending messages as handled now that we're responding
@@ -298,18 +310,34 @@ async def process_turn(
             "assistant", result.output, channel=event.source, handled=True
         )
 
-        # If the agent produced a final text but never called respond_to_user,
-        # send it back to the originating channel as a fallback.
-        if not deps.turn_ended and deps.step == 0:
-            log.info("↩ fallback reply → %s", event.source)
-            await bus.put_outbox(
-                Event(
-                    source="agent",
-                    kind=EventKind.RESPONSE,
-                    payload=result.output,
-                    reply_to=event.source,
-                    metadata=event.metadata,
-                )
+        # -- LAST-CHANCE RESPONSE -------------------------------------------
+        # If the agent finished without sending any response to the user,
+        # give it one more shot with explicit instructions to reply.
+        if deps.response_count == 0:
+            log.warning(
+                "agent sent 0 responses — running last-chance pass for %s",
+                event.source,
+            )
+            # Stop typing if still going (agent may not have called end_turn)
+            from newton.telegram_adapter import _stop_typing
+            chat_id = event.metadata.get("chat_id")
+            if chat_id:
+                _stop_typing(chat_id)
+
+            deps.turn_ended = False
+            last_chance_prompt = (
+                f"You received a message from the user but have NOT sent any "
+                f"reply yet. This is your last chance to respond. You MUST call "
+                f"respond_to_user(channel='{event.source}', message=...) now to "
+                f"reply, then call end_turn.\n\n"
+                f"Original message: {event.payload}"
+            )
+            with atracer.start_as_current_span("agent.last_chance"):
+                result = await agent.run(last_chance_prompt, deps=deps)
+
+            log.info(
+                "last-chance pass done  responses=%d  output=%s",
+                deps.response_count, result.output[:120],
             )
 
         # -- ARCHIVAL REFLECTION LOOP ------------------------------------
