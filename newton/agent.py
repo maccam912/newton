@@ -234,14 +234,16 @@ class ArchivalDecision(BaseModel):
     )
 
 _archival_agent: Agent[AgentDeps, ArchivalDecision] | None = None
+_archival_agent_model: str | None = None
 
 
-def _get_archival_agent() -> Agent[AgentDeps, ArchivalDecision]:
+def _get_archival_agent(cfg: Config) -> Agent[AgentDeps, ArchivalDecision]:
     """Lazy-init the reflection agent (avoids requiring API key at import)."""
-    global _archival_agent
-    if _archival_agent is None:
+    global _archival_agent, _archival_agent_model
+    if _archival_agent is None or _archival_agent_model != cfg.llm.model:
+        _archival_agent_model = cfg.llm.model
         _archival_agent = Agent(
-            OpenRouterModel("stepfun/step-3.5-flash:free"),
+            OpenRouterModel(cfg.llm.model),
             output_type=ArchivalDecision,
             deps_type=AgentDeps,
             system_prompt=(
@@ -350,7 +352,7 @@ async def process_turn(
             )
 
             try:
-                reflection = await _get_archival_agent().run(transcript, deps=deps)
+                reflection = await _get_archival_agent(cfg).run(transcript, deps=deps)
                 decision = reflection.output
 
                 if decision.should_archive and decision.content:
