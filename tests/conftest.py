@@ -10,4 +10,4 @@ from newton.config import Config
 @pytest.fixture
 def cfg() -> Config:
     """A default Config with no external dependencies."""
-    return Config()
+    return Config(llm={"api_key": "test-key"})

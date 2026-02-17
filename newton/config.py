@@ -14,9 +14,13 @@ CONFIG_PATH = Path("config.toml")
 
 
 class LLMConfig(BaseModel):
+    provider: str = "openrouter"  # "openrouter" or "zai"
     model: str = "stepfun/step-3.5-flash:free"
+    api_key: str = ""
+    base_url: str = ""
     system_prompt: str = "You are Newton, a helpful assistant."
     reasoning_effort: str = "low"  # "low", "medium", or "high"
+    prompt_prefix_cache_ttl_seconds: int = 300
 
 
 class TelegramConfig(BaseModel):
@@ -61,7 +65,9 @@ class Config(BaseModel):
 # Map of ENV_VAR -> (config section, field)
 _ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "TELEGRAM_BOT_TOKEN": ("telegram", "bot_token"),
-    "OPENROUTER_API_KEY": ("llm", "api_key"),
+    "OPENROUTER_API_KEY": ("llm", "openrouter_api_key"),
+    "ZAI_API_KEY": ("llm", "zai_api_key"),
+    "ZAI_BASE_URL": ("llm", "base_url"),
 }
 
 
@@ -83,5 +89,17 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         value = os.getenv(env_var)
         if value:
             data.setdefault(section, {})[field] = value
+
+    # Normalize provider-specific API key aliases to llm.api_key.
+    llm_data = data.setdefault("llm", {})
+    provider = str(llm_data.get("provider", "openrouter")).lower()
+    if not llm_data.get("api_key"):
+        if provider == "zai" and llm_data.get("zai_api_key"):
+            llm_data["api_key"] = llm_data["zai_api_key"]
+        elif provider == "openrouter" and llm_data.get("openrouter_api_key"):
+            llm_data["api_key"] = llm_data["openrouter_api_key"]
+
+    llm_data.pop("openrouter_api_key", None)
+    llm_data.pop("zai_api_key", None)
 
     return Config(**data)

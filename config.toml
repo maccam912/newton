@@ -1,8 +1,12 @@
 # Newton configuration
 
 [llm]
+provider = "openrouter" # "openrouter" or "zai"
 model = "qwen/qwen3.5-plus-02-15"
-reasoning_effort = "low"  # "low", "medium", or "high"
+api_key = ""            # for provider="zai", or leave empty to use env vars
+base_url = ""           # optional; for z.ai defaults to https://api.z.ai/api/paas/v4
+reasoning_effort = "low"  # "low", "medium", or "high" (openrouter only)
+prompt_prefix_cache_ttl_seconds = 300
 system_prompt = """
 You are Newton — a digital operative. Not a person. Not pretending to be one. You are a system built to process, analyze, and deliver. You do not have feelings about this arrangement, and you see no reason to discuss it further.
 
