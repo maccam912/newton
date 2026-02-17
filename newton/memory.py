@@ -31,24 +31,34 @@ def _serialize_embedding(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
-_openai_client: AsyncOpenAI | None = None
+def _make_openai_client(base_url: str = "") -> AsyncOpenAI:
+    """Create an AsyncOpenAI-compatible embeddings client.
+
+    Resolution order for API key + base URL:
+      1. If base_url is explicitly set, use it with OPENROUTER_API_KEY (or OPENAI_API_KEY).
+      2. If OPENAI_API_KEY is set, use OpenAI directly (no custom base_url).
+      3. Fall back to OpenRouter using OPENROUTER_API_KEY.
+    """
+    if base_url:
+        # Explicit base URL — pick whichever key is available
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ["OPENROUTER_API_KEY"]
+        return AsyncOpenAI(base_url=base_url, api_key=api_key)
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if openai_key:
+        # Use OpenAI directly
+        return AsyncOpenAI(api_key=openai_key)
+
+    # Fall back to OpenRouter
+    return AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+    )
 
 
-def _get_openai_client() -> AsyncOpenAI:
-    """Lazy-init an AsyncOpenAI client pointed at OpenRouter."""
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.environ["OPENROUTER_API_KEY"],
-        )
-    return _openai_client
-
-
-async def _embed(text: str, model: str) -> list[float]:
-    """Get an embedding vector via OpenRouter (OpenAI-compatible API)."""
+async def _embed(text: str, model: str, client: AsyncOpenAI) -> list[float]:
+    """Get an embedding vector via an OpenAI-compatible API."""
     with tracer.start_as_current_span("embed", attributes={"model": model, "text_len": len(text)}):
-        client = _get_openai_client()
         resp = await client.embeddings.create(model=model, input=[text])
         return list(resp.data[0].embedding)
 
@@ -72,6 +82,7 @@ class MemoryStore:
         self.db_path = cfg.memory.db_path
         self.embedding_model = cfg.memory.embedding_model
         self._db: aiosqlite.Connection | None = None
+        self._embed_client: AsyncOpenAI = _make_openai_client(cfg.memory.embedding_base_url)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -155,7 +166,7 @@ class MemoryStore:
         try:
             await self._db.execute("SELECT * FROM archival_vec LIMIT 0")
         except Exception:
-            test_vec = await _embed("hello", self.embedding_model)
+            test_vec = await _embed("hello", self.embedding_model, self._embed_client)
             dim = len(test_vec)
             await self._db.execute(
                 f"CREATE VIRTUAL TABLE archival_vec USING vec0("
@@ -268,7 +279,7 @@ class MemoryStore:
         """Store a piece of knowledge with its embedding. Returns the id."""
         with tracer.start_as_current_span("memory.archival_insert", attributes={"content_len": len(content)}) as span:
             assert self._db
-            vec = await _embed(content, self.embedding_model)
+            vec = await _embed(content, self.embedding_model, self._embed_client)
             blob = _serialize_embedding(vec)
             now = datetime.now(timezone.utc).isoformat()
 
@@ -292,7 +303,7 @@ class MemoryStore:
         """Semantic search over archival memory.  Returns top-k content strings."""
         with tracer.start_as_current_span("memory.archival_search", attributes={"query": query[:80], "k": k}) as span:
             assert self._db
-            vec = await _embed(query, self.embedding_model)
+            vec = await _embed(query, self.embedding_model, self._embed_client)
             blob = _serialize_embedding(vec)
 
             cursor = await self._db.execute(

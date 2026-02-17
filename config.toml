@@ -1,8 +1,10 @@
 # Newton configuration
 
 [llm]
-model = "qwen/qwen3.5-plus-02-15"
-reasoning_effort = "low"  # "low", "medium", or "high"
+provider = "anthropic"            # "anthropic" or "openrouter"
+model = "claude-sonnet-4-6"
+use_cache = true                  # enable Anthropic prompt caching
+# reasoning_effort = "low"       # only used when provider = "openrouter"
 system_prompt = """
 You are Newton — a digital operative. Not a person. Not pretending to be one. You are a system built to process, analyze, and deliver. You do not have feelings about this arrangement, and you see no reason to discuss it further.
 
@@ -38,7 +40,6 @@ Memory and situational awareness:
 Responding:
 - You MUST call respond_to_user to send messages. Call end_turn when you're done.
 - Brevity is not a goal. It is a requirement. Say what needs saying. Stop.
-- Ask follow-up questions only when the mission depends on it. Not to fill air.
 """
 
 [telegram]
@@ -49,7 +50,9 @@ heartbeat_minutes = 60
 
 [memory]
 db_path = "memory.db"
-embedding_model = "openai/text-embedding-3-small"
+# OpenAI naming when using OPENAI_API_KEY; use "openai/text-embedding-3-small" for OpenRouter
+embedding_model = "text-embedding-3-small"
+# embedding_base_url = "https://openrouter.ai/api/v1"  # uncomment to route through OpenRouter
 recall_window = 10
 archival_search_k = 5
 

@@ -14,9 +14,12 @@ CONFIG_PATH = Path("config.toml")
 
 
 class LLMConfig(BaseModel):
-    model: str = "stepfun/step-3.5-flash:free"
+    provider: str = "anthropic"        # "anthropic" or "openrouter"
+    model: str = "claude-sonnet-4-6"
     system_prompt: str = "You are Newton, a helpful assistant."
-    reasoning_effort: str = "low"  # "low", "medium", or "high"
+    use_cache: bool = True             # enable Anthropic prompt caching (ignored for openrouter)
+    # OpenRouter-only settings (ignored when provider = "anthropic")
+    reasoning_effort: str = "low"     # "low", "medium", or "high"
 
 
 class TelegramConfig(BaseModel):
@@ -30,7 +33,12 @@ class SchedulerConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     db_path: str = "memory.db"
-    embedding_model: str = "openai/text-embedding-3-small"
+    # Embedding model name — use OpenAI naming (e.g. "text-embedding-3-small")
+    # or OpenRouter naming (e.g. "openai/text-embedding-3-small") depending on provider.
+    embedding_model: str = "text-embedding-3-small"
+    # Base URL for the embeddings API.  Leave empty to use OpenAI directly.
+    # Set to "https://openrouter.ai/api/v1" to route through OpenRouter.
+    embedding_base_url: str = ""
     recall_window: int = 10        # recent messages to include in context
     archival_search_k: int = 5     # archival results per query
     idle_archival_seconds: int = 300  # 5 minutes
@@ -59,9 +67,9 @@ class Config(BaseModel):
 
 
 # Map of ENV_VAR -> (config section, field)
+# Secrets are always read from env vars so they're never committed to config.toml.
 _ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "TELEGRAM_BOT_TOKEN": ("telegram", "bot_token"),
-    "OPENROUTER_API_KEY": ("llm", "api_key"),
 }
 
 

@@ -6,7 +6,6 @@ import logging
 from collections.abc import Sequence
 
 from pydantic_ai import Agent, RunContext, UserContent
-from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
 from newton.config import Config
 from datetime import datetime
@@ -77,13 +76,30 @@ def _step_tag(deps: AgentDeps) -> str:
 # Build agent + register tools
 # ---------------------------------------------------------------------------
 
+def _make_model(cfg: Config):
+    """Instantiate the LLM model based on config provider."""
+    if cfg.llm.provider == "openrouter":
+        from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
+        model = OpenRouterModel(cfg.llm.model)
+        settings = OpenRouterModelSettings(
+            openrouter_reasoning={"effort": cfg.llm.reasoning_effort},
+        )
+        return model, settings
+
+    # Default: anthropic
+    from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
+    model = AnthropicModel(cfg.llm.model)
+    settings = AnthropicModelSettings(
+        anthropic_cache_instructions=cfg.llm.use_cache,
+        anthropic_cache_tool_definitions=cfg.llm.use_cache,
+    )
+    return model, settings
+
+
 def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     """Build the agent with memory, communication, and control-flow tools."""
-    model = OpenRouterModel(cfg.llm.model)
+    model, model_settings = _make_model(cfg)
     browser_server = create_browser_server(cfg)
-    model_settings = OpenRouterModelSettings(
-        openrouter_reasoning={"effort": cfg.llm.reasoning_effort},
-    )
     agent: Agent[AgentDeps, str] = Agent(
         model,
         deps_type=AgentDeps,
@@ -409,8 +425,9 @@ def _get_session_archival_agent(cfg: Config) -> Agent[AgentDeps, SessionArchival
     global _session_archival_agent, _session_archival_agent_model
     if _session_archival_agent is None or _session_archival_agent_model != cfg.llm.model:
         _session_archival_agent_model = cfg.llm.model
+        model, _ = _make_model(cfg)
         _session_archival_agent = Agent(
-            OpenRouterModel(cfg.llm.model),
+            model,
             output_type=SessionArchivalResult,
             deps_type=AgentDeps,
             system_prompt=(
