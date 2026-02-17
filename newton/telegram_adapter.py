@@ -63,6 +63,11 @@ def _stop_typing(chat_id: str) -> None:
         log.debug("typing indicator OFF for chat %s", chat_id)
 
 
+def _telegram_file_url(bot_token: str, file_path: str) -> str:
+    """Build a direct Telegram file URL from file_path."""
+    return f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+
+
 # ---------------------------------------------------------------------------
 # Inbound — polling
 # ---------------------------------------------------------------------------
@@ -114,7 +119,30 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
                 "        from user  id=%-14s  username=%-16s  name=%s",
                 user.id, user.username or "(none)", user.full_name,
             )
-        log.info("        text: %s", (update.message.text or "")[:200])
+        text = (update.message.text or update.message.caption or "").strip()
+        has_photo = bool(update.message.photo)
+        log.info("        has_photo=%s  text: %s", has_photo, text[:200])
+
+        payload = text
+        metadata: dict[str, str] = {"chat_id": chat_id}
+
+        if has_photo:
+            payload = f"{text}\n[User sent a photo.]" if text else "[User sent a photo.]"
+            photo = update.message.photo[-1]
+            try:
+                tg_file = await app.bot.get_file(photo.file_id)
+                if tg_file.file_path:
+                    metadata["image_url"] = _telegram_file_url(
+                        cfg.telegram.bot_token,
+                        tg_file.file_path,
+                    )
+                else:
+                    log.warning("Photo message has no file_path (chat_id=%s)", chat_id)
+            except Exception as exc:
+                log.error("Failed to resolve photo URL for chat %s: %s", chat_id, exc)
+
+        if not payload:
+            payload = "[User sent an empty message.]"
 
         # Start typing indicator while the agent works
         _start_typing(app.bot, chat_id)
@@ -123,12 +151,14 @@ async def start_telegram(bus: EventBus, cfg: Config) -> None:
             Event(
                 source=CHANNEL,
                 kind=EventKind.MESSAGE,
-                payload=update.message.text or "",
-                metadata={"chat_id": chat_id},
+                payload=payload,
+                metadata=metadata,
             )
         )
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    app.add_handler(
+        MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, on_message)
+    )
 
     # Use the low-level async lifecycle instead of run_polling(), which tries
     # to manage its own event loop and conflicts with the already-running one.

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ImageUrl, RunContext, UserContent
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
 from newton.config import Config
@@ -489,26 +490,29 @@ async def process_turn(
 ) -> None:
     """Process a single turn of the conversation."""
     deps = AgentDeps(memory=memory, cfg=cfg, bus=bus)
+    run_input, run_prompt = _build_run_input(event)
+    response_metadata = dict(event.metadata)
+    response_metadata.pop("image_url", None)
 
     with atracer.start_as_current_span(
         "agent.turn",
         attributes={
             "source": event.source,
-            "message_len": len(event.payload),
+            "message_len": len(run_prompt),
         },
     ) as turn_span:
-        log.info("▶ turn start  src=%s  msg=%s", event.source, event.payload[:100])
+        log.info("▶ turn start  src=%s  msg=%s", event.source, run_prompt[:100])
 
         # Save inbound message to recall memory (unhandled)
         await memory.recall_save("user", event.payload, channel=event.source)
 
         # Reset per-turn state
-        deps.current_message = event.payload
+        deps.current_message = run_prompt
         deps.step = 0
         deps.turn_ended = False
         deps.response_count = 0
         deps.event_source = event.source
-        deps.event_metadata = event.metadata
+        deps.event_metadata = response_metadata
 
         # Mark all pending messages as handled now that we're responding
         await memory.recall_mark_handled()
@@ -517,7 +521,7 @@ async def process_turn(
         result = None
         try:
             with atracer.start_as_current_span("agent.run"):
-                result = await agent.run(event.payload, deps=deps)
+                result = await agent.run(run_input, deps=deps)
         except Exception:
             log.exception("agent.run failed — will attempt last-chance reply")
 
@@ -551,13 +555,7 @@ async def process_turn(
                 _stop_typing(chat_id)
 
             deps.turn_ended = False
-            last_chance_prompt = (
-                f"You received a message from the user but have NOT sent any "
-                f"reply yet. This is your last chance to respond. You MUST call "
-                f"respond_to_user(channel='{event.source}', message=...) now to "
-                f"reply, then call end_turn.\n\n"
-                f"Original message: {event.payload}"
-            )
+            last_chance_prompt = _build_last_chance_prompt(event, run_prompt)
             try:
                 with atracer.start_as_current_span("agent.last_chance"):
                     result = await agent.run(last_chance_prompt, deps=deps)
@@ -569,6 +567,33 @@ async def process_turn(
             except Exception:
                 log.exception("last-chance pass also failed")
 
+
+
+def _build_run_input(event: Event) -> tuple[str | Sequence[UserContent], str]:
+    """Build model input for this turn plus a text summary for logging/context."""
+    image_url = event.metadata.get("image_url", "").strip()
+    if not image_url:
+        return event.payload, event.payload
+
+    prompt_text = event.payload.strip() or "[User sent an image.]"
+    parts: list[UserContent] = [prompt_text, ImageUrl(url=image_url)]
+    return parts, prompt_text
+
+
+def _build_last_chance_prompt(event: Event, run_prompt: str) -> str | Sequence[UserContent]:
+    """Build last-chance input, preserving image context when available."""
+    instruction = (
+        f"You received a message from the user but have NOT sent any "
+        f"reply yet. This is your last chance to respond. You MUST call "
+        f"respond_to_user(channel='{event.source}', message=...) now to "
+        f"reply, then call end_turn.\n\n"
+        f"Original message: {run_prompt}"
+    )
+
+    image_url = event.metadata.get("image_url", "").strip()
+    if not image_url:
+        return instruction
+    return [instruction, ImageUrl(url=image_url)]
 
 
 async def process_heartbeat(

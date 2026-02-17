@@ -5,10 +5,17 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic_ai import ImageUrl
 
 from newton.config import Config
-from newton.agent import AgentDeps, _step_tag, create_agent
-from newton.events import EventBus
+from newton.agent import (
+    AgentDeps,
+    _build_last_chance_prompt,
+    _build_run_input,
+    _step_tag,
+    create_agent,
+)
+from newton.events import Event, EventBus, EventKind
 
 
 pytestmark = pytest.mark.unit
@@ -73,3 +80,36 @@ class TestCreateAgent:
         mcp_toolsets = [ts for ts in agent.toolsets if isinstance(ts, MCPServerStdio)]
         assert len(mcp_toolsets) == 1
         assert mcp_toolsets[0].command == "npx"
+
+
+class TestRunInputBuilder:
+    def test_text_only(self):
+        event = Event(source="telegram", kind=EventKind.MESSAGE, payload="hello")
+        run_input, summary = _build_run_input(event)
+        assert run_input == "hello"
+        assert summary == "hello"
+
+    def test_image_builds_multimodal_input(self):
+        event = Event(
+            source="telegram",
+            kind=EventKind.MESSAGE,
+            payload="[User sent a photo.]",
+            metadata={"chat_id": "1", "image_url": "https://example.com/file.jpg"},
+        )
+        run_input, summary = _build_run_input(event)
+        assert isinstance(run_input, list)
+        assert run_input[0] == "[User sent a photo.]"
+        assert isinstance(run_input[1], ImageUrl)
+        assert run_input[1].url == "https://example.com/file.jpg"
+        assert summary == "[User sent a photo.]"
+
+    def test_last_chance_keeps_image(self):
+        event = Event(
+            source="telegram",
+            kind=EventKind.MESSAGE,
+            payload="[User sent a photo.]",
+            metadata={"chat_id": "1", "image_url": "https://example.com/file.jpg"},
+        )
+        prompt = _build_last_chance_prompt(event, "[User sent a photo.]")
+        assert isinstance(prompt, list)
+        assert isinstance(prompt[1], ImageUrl)
