@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from pydantic_ai import Agent, ImageUrl, RunContext, UserContent
+from pydantic_ai import Agent, RunContext, UserContent
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 
 from newton.config import Config
@@ -576,7 +576,7 @@ def _build_run_input(event: Event) -> tuple[str | Sequence[UserContent], str]:
         return event.payload, event.payload
 
     prompt_text = event.payload.strip() or "[User sent an image.]"
-    parts: list[UserContent] = [prompt_text, ImageUrl(url=image_url)]
+    parts: list[UserContent] = [prompt_text, image_url]
     return parts, prompt_text
 
 
@@ -593,7 +593,7 @@ def _build_last_chance_prompt(event: Event, run_prompt: str) -> str | Sequence[U
     image_url = event.metadata.get("image_url", "").strip()
     if not image_url:
         return instruction
-    return [instruction, ImageUrl(url=image_url)]
+    return [instruction, image_url]
 
 
 async def process_heartbeat(

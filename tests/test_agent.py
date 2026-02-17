@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import ImageUrl
 
 from newton.config import Config
 from newton.agent import (
@@ -99,8 +98,8 @@ class TestRunInputBuilder:
         run_input, summary = _build_run_input(event)
         assert isinstance(run_input, list)
         assert run_input[0] == "[User sent a photo.]"
-        assert isinstance(run_input[1], ImageUrl)
-        assert run_input[1].url == "https://example.com/file.jpg"
+        assert isinstance(run_input[1], str)
+        assert run_input[1] == "https://example.com/file.jpg"
         assert summary == "[User sent a photo.]"
 
     def test_last_chance_keeps_image(self):
@@ -112,4 +111,5 @@ class TestRunInputBuilder:
         )
         prompt = _build_last_chance_prompt(event, "[User sent a photo.]")
         assert isinstance(prompt, list)
-        assert isinstance(prompt[1], ImageUrl)
+        assert isinstance(prompt[1], str)
+        assert prompt[1] == "https://example.com/file.jpg"
