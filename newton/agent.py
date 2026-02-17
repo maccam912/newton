@@ -14,7 +14,6 @@ from newton.context import build_heartbeat_prompt, build_system_prompt
 from newton.events import Event, EventBus, EventKind, ColorFormatter
 from newton.memory import MemoryStore
 from newton.tools.browser import create_browser_server
-from opentelemetry import trace
 from newton.tracing import get_tracer
 
 atracer = get_tracer("newton.agent")
@@ -386,38 +385,95 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
 
 from pydantic import BaseModel, Field
 
-class ArchivalDecision(BaseModel):
-    """Decision on whether to archive information from the conversation."""
-    should_archive: bool = Field(
-        description="True if the conversation contains long-term knowledge worth saving."
+class SessionArchivalResult(BaseModel):
+    """Result of session archival: a summary plus extractable facts."""
+    summary: str = Field(
+        description="2-5 sentence summary of the session for continuity."
     )
-    content: str | None = Field(
-        default=None,
-        description="The standalone fact or knowledge to be archived. Required if should_archive is True."
+    archival_facts: list[str] = Field(
+        default_factory=list,
+        description="Standalone facts worth saving in long-term archival memory. "
+        "Each should be self-contained. Empty list if nothing worth saving."
     )
 
-_archival_agent: Agent[AgentDeps, ArchivalDecision] | None = None
-_archival_agent_model: str | None = None
+_session_archival_agent: Agent[AgentDeps, SessionArchivalResult] | None = None
+_session_archival_agent_model: str | None = None
 
 
-def _get_archival_agent(cfg: Config) -> Agent[AgentDeps, ArchivalDecision]:
-    """Lazy-init the reflection agent (avoids requiring API key at import)."""
-    global _archival_agent, _archival_agent_model
-    if _archival_agent is None or _archival_agent_model != cfg.llm.model:
-        _archival_agent_model = cfg.llm.model
-        _archival_agent = Agent(
+def _get_session_archival_agent(cfg: Config) -> Agent[AgentDeps, SessionArchivalResult]:
+    """Lazy-init the session archival agent."""
+    global _session_archival_agent, _session_archival_agent_model
+    if _session_archival_agent is None or _session_archival_agent_model != cfg.llm.model:
+        _session_archival_agent_model = cfg.llm.model
+        _session_archival_agent = Agent(
             OpenRouterModel(cfg.llm.model),
-            output_type=ArchivalDecision,
+            output_type=SessionArchivalResult,
             deps_type=AgentDeps,
             system_prompt=(
-                "You are a memory manager. Analyze the conversation turn. "
-                "Extract any PERMANENT facts, user preferences, or important context that "
-                "should be stored in long-term archival memory. "
-                "Ignore usage instructions, casual greetings, or temporary state. "
-                "If nothing is worth saving, set should_archive=False."
+                "You are a memory manager. You are given a full session transcript. "
+                "Produce TWO things:\n"
+                "1. A 2-5 sentence SUMMARY of the session — what was discussed, "
+                "what was accomplished, any open threads.\n"
+                "2. A list of STANDALONE FACTS worth saving permanently in long-term "
+                "archival memory (user preferences, important decisions, learned info). "
+                "Each fact must be self-contained and understandable without the conversation. "
+                "If nothing is worth archiving, return an empty list for archival_facts."
             ),
         )
-    return _archival_agent
+    return _session_archival_agent
+
+
+async def _run_session_archival(
+    memory: MemoryStore, cfg: Config, bus: EventBus
+) -> None:
+    """Summarize the current session, archive facts, save summary, clear recall."""
+    with atracer.start_as_current_span("agent.session_archival") as span:
+        messages = await memory.recall_get_all()
+        if not messages:
+            return
+
+        msg_count = len(messages)
+        channels = ", ".join(sorted({m["channel"] for m in messages if m["channel"]})) or "unknown"
+
+        # Build transcript
+        lines: list[str] = []
+        for m in messages:
+            role = "User" if m["role"] == "user" else "Newton"
+            ts = m.get("timestamp", "")[:19].replace("T", " ")
+            lines.append(f"[{ts}] {role}: {m['content']}")
+        transcript = "\n".join(lines)
+
+        log.info("session archival: %d messages, channels=%s", msg_count, channels)
+        span.set_attribute("msg_count", msg_count)
+
+        deps = AgentDeps(memory=memory, cfg=cfg, bus=bus)
+        try:
+            result = await _get_session_archival_agent(cfg).run(transcript, deps=deps)
+            decision = result.output
+
+            # Archive each fact
+            for fact in decision.archival_facts:
+                row_id = await memory.archival_insert(fact)
+                log.info("session archival: stored fact id=%d -> %s", row_id, fact[:60])
+
+            # Save session summary
+            summary_id = await memory.session_summary_save(
+                summary=decision.summary,
+                channels=channels,
+                msg_count=msg_count,
+            )
+            log.info("session archival: summary id=%d", summary_id)
+            span.set_attribute("facts_count", len(decision.archival_facts))
+            span.set_attribute("summary_id", summary_id)
+
+        except Exception as e:
+            log.error("session archival agent failed", exc_info=e)
+            span.record_exception(e)
+            return
+
+        # Clear recall only after successful archival
+        cleared = await memory.recall_clear()
+        log.info("session archival: cleared %d recall rows", cleared)
 
 
 # ---------------------------------------------------------------------------
@@ -513,29 +569,6 @@ async def process_turn(
             except Exception:
                 log.exception("last-chance pass also failed")
 
-        # -- ARCHIVAL REFLECTION LOOP ------------------------------------
-        # The agent MUST decide whether to archive anything from this turn.
-        with atracer.start_as_current_span("agent.reflection"):
-            # Prepare transcript for the reflection agent
-            transcript = (
-                f"User: {event.payload}\n"
-                f"Assistant: {result.output}\n"
-            )
-
-            try:
-                reflection = await _get_archival_agent(cfg).run(transcript, deps=deps)
-                decision = reflection.output
-
-                if decision.should_archive and decision.content:
-                    log.info("🧠 reflection: archiving -> %s", decision.content[:60])
-                    row_id = await memory.archival_insert(decision.content)
-                    trace.get_current_span().set_attribute("archived_id", row_id)
-                else:
-                    log.info("🧠 reflection: nothing to archive")
-
-            except Exception as e:
-                log.error("Reflection failed", exc_info=e)
-                trace.get_current_span().record_exception(e)
 
 
 async def process_heartbeat(
@@ -648,12 +681,23 @@ async def run_agent_loop(
     bus: EventBus, cfg: Config, memory: MemoryStore
 ) -> None:
     """Pull events from the inbox, run the agent with step tracking."""
+    import asyncio
     agent = create_agent(cfg)
+    idle_seconds = cfg.memory.idle_archival_seconds
 
     async with agent:  # opens MCP server connections (e.g. Playwright)
         while True:
-            # Block until at least one event arrives
-            event = await bus.inbox.get()
+            # Block until an event arrives, or idle timeout triggers archival
+            try:
+                event = await asyncio.wait_for(bus.inbox.get(), timeout=idle_seconds)
+            except asyncio.TimeoutError:
+                if await memory.recall_count() > 0:
+                    log.info("idle timeout (%ds) — running session archival", idle_seconds)
+                    try:
+                        await _run_session_archival(memory, cfg, bus)
+                    except Exception:
+                        log.exception("session archival failed")
+                continue
 
             # --- HEARTBEAT: lightweight processing, no batching ---
             if event.kind == EventKind.HEARTBEAT:

@@ -139,6 +139,14 @@ class MemoryStore:
                 created     TEXT NOT NULL,
                 updated     TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                summary   TEXT NOT NULL,
+                channels  TEXT NOT NULL DEFAULT '',
+                msg_count INTEGER NOT NULL DEFAULT 0,
+                created   TEXT NOT NULL
+            );
         """)
         await self._db.commit()
 
@@ -364,6 +372,88 @@ class MemoryStore:
                     "handled": str(row[4]),
                 }
                 for row in reversed(rows)
+            ]
+            span.set_attribute("result_count", len(result))
+            return result
+
+    async def recall_get_all(self) -> list[dict[str, str]]:
+        """Return all recall rows chronologically (for session summarization)."""
+        with tracer.start_as_current_span("memory.recall_get_all") as span:
+            assert self._db
+            cursor = await self._db.execute(
+                "SELECT role, content, channel, timestamp, handled "
+                "FROM recall_memory ORDER BY timestamp ASC, id ASC"
+            )
+            rows = await cursor.fetchall()
+            result = [
+                {
+                    "role": row[0],
+                    "content": row[1],
+                    "channel": row[2],
+                    "timestamp": row[3],
+                    "handled": str(row[4]),
+                }
+                for row in rows
+            ]
+            span.set_attribute("result_count", len(result))
+            return result
+
+    async def recall_clear(self) -> int:
+        """Delete all recall rows. Returns count of deleted rows."""
+        with tracer.start_as_current_span("memory.recall_clear") as span:
+            assert self._db
+            cursor = await self._db.execute("SELECT COUNT(*) FROM recall_memory")
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            await self._db.execute("DELETE FROM recall_memory")
+            await self._db.commit()
+            span.set_attribute("deleted_count", count)
+            return count
+
+    async def recall_count(self) -> int:
+        """Return the number of recall rows."""
+        with tracer.start_as_current_span("memory.recall_count") as span:
+            assert self._db
+            cursor = await self._db.execute("SELECT COUNT(*) FROM recall_memory")
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            span.set_attribute("count", count)
+            return count
+
+    async def session_summary_save(self, summary: str, channels: str, msg_count: int) -> int:
+        """Insert a session summary row. Returns the row id."""
+        with tracer.start_as_current_span("memory.session_summary_save") as span:
+            assert self._db
+            now = datetime.now(timezone.utc).isoformat()
+            cursor = await self._db.execute(
+                "INSERT INTO session_summaries (summary, channels, msg_count, created) "
+                "VALUES (?, ?, ?, ?)",
+                (summary, channels, msg_count, now),
+            )
+            await self._db.commit()
+            row_id = cursor.lastrowid or 0
+            span.set_attribute("row_id", row_id)
+            return row_id
+
+    async def session_summaries_recent(self, n: int = 3) -> list[dict]:
+        """Return the last N session summaries, oldest first."""
+        with tracer.start_as_current_span("memory.session_summaries_recent", attributes={"n": n}) as span:
+            assert self._db
+            cursor = await self._db.execute(
+                "SELECT id, summary, channels, msg_count, created "
+                "FROM session_summaries ORDER BY id DESC LIMIT ?",
+                (n,),
+            )
+            rows = await cursor.fetchall()
+            result = [
+                {
+                    "id": row[0],
+                    "summary": row[1],
+                    "channels": row[2],
+                    "msg_count": row[3],
+                    "created": row[4],
+                }
+                for row in reversed(rows)  # oldest first
             ]
             span.set_attribute("result_count", len(result))
             return result

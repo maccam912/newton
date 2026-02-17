@@ -79,7 +79,19 @@ async def build_system_prompt(
                     for i, text in enumerate(results, 1):
                         parts.append(f"{i}. {text}")
 
-        # 6. Recent conversation history (ordered by timestamp)
+        # 6. Previous session summaries
+        with tracer.start_as_current_span("context.session_summaries"):
+            summaries = await memory.session_summaries_recent(n=3)
+            if summaries:
+                parts.append("\n--- PREVIOUS SESSIONS ---")
+                for s in summaries:
+                    ts = s["created"][:19].replace("T", " ")
+                    parts.append(
+                        f"[{ts}] ({s['msg_count']} messages, channels: {s['channels']})\n"
+                        f"{s['summary']}"
+                    )
+
+        # 7. Recent conversation history (ordered by timestamp)
         with tracer.start_as_current_span("context.recall"):
             history = await memory.recall_recent(n=cfg.memory.recall_window)
             if history:
@@ -160,7 +172,18 @@ async def build_heartbeat_prompt(
                     line += f" -> {r['channel']}"
                 parts.append(line)
 
-        # 6. Short recall (last 3 messages only)
+        # 6. Previous session summaries (brief — last 2)
+        summaries = await memory.session_summaries_recent(n=2)
+        if summaries:
+            parts.append("\n--- PREVIOUS SESSIONS ---")
+            for s in summaries:
+                ts = s["created"][:19].replace("T", " ")
+                parts.append(
+                    f"[{ts}] ({s['msg_count']} messages, channels: {s['channels']})\n"
+                    f"{s['summary']}"
+                )
+
+        # 7. Short recall (last 3 messages only)
         history = await memory.recall_recent(n=3)
         if history:
             parts.append("\n--- RECENT ACTIVITY (last 3) ---")
