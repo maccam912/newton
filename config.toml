@@ -72,3 +72,7 @@ max_output_chars = 10000  # truncate stdout/stderr beyond this
 [tools.bash]
 max_timeout = 120         # hard ceiling for timeout_seconds param
 max_output_chars = 10000  # truncate stdout/stderr beyond this
+
+[tools.vikunja]
+# base_url and api_token can also be set via VIKUNJA_BASE_URL / VIKUNJA_API_TOKEN env vars
+request_timeout = 15      # HTTP request timeout in seconds

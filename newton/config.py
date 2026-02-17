@@ -46,6 +46,7 @@ class ToolsConfig(BaseModel):
     browser: dict[str, str | bool] = {}  # e.g. {"browser": "chromium", "headless": true}
     scripts: dict[str, str | int] = {}   # e.g. {"max_timeout": 300, "max_output_chars": 10000}
     bash: dict[str, str | int] = {}      # e.g. {"max_timeout": 120, "max_output_chars": 10000}
+    vikunja: dict[str, str | int] = {}   # e.g. {"request_timeout": 15}
 
 
 class Config(BaseModel):
