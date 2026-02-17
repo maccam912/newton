@@ -133,6 +133,9 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     import newton.tools.bash
     newton.tools.bash.register(agent)
 
+    import newton.tools.vikunja
+    newton.tools.vikunja.register(agent)
+
     # == Control-flow tools ================================================
 
     @agent.tool
