@@ -12,6 +12,9 @@ pytestmark = pytest.mark.unit
 
 
 class DummyMemory:
+    async def context_collapse_get_note(self):
+        return "Working on quarterly plan; next step is budget review."
+
     async def get_core_blocks(self):
         return {"notebook": "remember this"}
 
@@ -35,6 +38,8 @@ async def test_build_system_prefix_contains_stable_sections():
     cfg = Config()
     memory = DummyMemory()
     prefix = await build_system_prefix(cfg, memory)
+    assert "--- CONTEXT COLLAPSE NOTE ---" in prefix
+    assert "quarterly plan" in prefix
     assert "--- CORE MEMORY ---" in prefix
     assert "--- KNOWN USERS ---" in prefix
     assert "--- AVAILABLE SKILLS ---" in prefix

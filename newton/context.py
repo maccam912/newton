@@ -13,6 +13,12 @@ async def build_system_prefix(cfg: Config, memory: MemoryStore) -> str:
     """Build the large, mostly-stable system prefix shared across turns."""
     parts: list[str] = [cfg.llm.system_prompt]
 
+    with tracer.start_as_current_span("context.collapse_note"):
+        collapse_note = await memory.context_collapse_get_note()
+        if collapse_note.strip():
+            parts.append("\n--- CONTEXT COLLAPSE NOTE ---")
+            parts.append(collapse_note)
+
     with tracer.start_as_current_span("context.core_memory"):
         blocks = await memory.get_core_blocks()
         if blocks:
@@ -138,6 +144,11 @@ async def build_heartbeat_prompt(
             parts.append("\n--- CORE MEMORY ---")
             for block, content in blocks.items():
                 parts.append(f"[{block}]\n{content}")
+
+        collapse_note = await memory.context_collapse_get_note()
+        if collapse_note.strip():
+            parts.append("\n--- CONTEXT COLLAPSE NOTE ---")
+            parts.append(collapse_note)
 
         skills = await memory.skill_list()
         if skills:
