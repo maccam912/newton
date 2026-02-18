@@ -171,7 +171,12 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             f"Anything you put there will be included in your system prompt on "
             f"every future turn — use it for things you want to always have in "
             f"mind: important patterns, ongoing tasks, reminders, or anything "
-            f"you find essential enough to keep front-and-center."
+            f"you find essential enough to keep front-and-center.\n\n"
+            f"Sub-agents: Use run_subagent(task) to delegate a multi-step task to a "
+            f"focused agent with a fresh context — only its final answer returns here, "
+            f"keeping intermediate steps out of your context. "
+            f"Use run_parallel_subagents(tasks) to run up to 5 independent tasks "
+            f"concurrently and receive all answers together when they complete."
         )
         return prompt
 
@@ -187,6 +192,9 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
 
     import newton.tools.vikunja
     newton.tools.vikunja.register(agent)
+
+    import newton.tools.subagent
+    newton.tools.subagent.register(agent)
 
     # == Control-flow tools ================================================
 
