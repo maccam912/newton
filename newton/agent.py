@@ -17,7 +17,6 @@ from newton.config import Config
 from newton.context import build_heartbeat_prompt, build_system_prefix, build_system_prompt
 from newton.events import Event, EventBus, EventKind, ColorFormatter
 from newton.memory import MemoryStore
-from newton.tools.browser import create_browser_server
 from newton.tracing import get_tracer
 
 atracer = get_tracer("newton.agent")
@@ -112,12 +111,10 @@ def _build_model_settings(cfg: Config):
 def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     """Build the agent with memory, communication, and control-flow tools."""
     model = _build_model(cfg)
-    browser_server = create_browser_server(cfg)
     model_settings = _build_model_settings(cfg)
     agent: Agent[AgentDeps, str] = Agent(
         model,
         deps_type=AgentDeps,
-        toolsets=[browser_server],
         model_settings=model_settings,
     )
 
@@ -826,4 +823,3 @@ async def run_agent_loop(
                     chat_id = merged.metadata.get("chat_id")
                     if chat_id:
                         _stop_typing(chat_id)
-

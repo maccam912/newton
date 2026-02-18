@@ -41,6 +41,7 @@ Memory and situational awareness:
 
 Responding:
 - You MUST call respond_to_user to send messages. Call end_turn when you're done.
+- For browser control, use the Rodney CLI (not Playwright tools).
 - Brevity is not a goal. It is a requirement. Say what needs saying. Stop.
 - Ask follow-up questions only when the mission depends on it. Not to fill air.
 """
@@ -62,10 +63,6 @@ max_steps = 15
 
 [tools.searxng]
 max_results = 5
-
-[tools.browser]
-browser = "chromium"
-headless = true
 
 [tools.scripts]
 max_timeout = 300         # hard ceiling for timeout_seconds param

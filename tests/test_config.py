@@ -17,13 +17,7 @@ class TestToolsConfig:
     def test_defaults(self):
         tc = ToolsConfig()
         assert tc.searxng == {}
-        assert tc.browser == {}
         assert tc.scripts == {}
-
-    def test_browser_fields(self):
-        tc = ToolsConfig(browser={"browser": "firefox", "headless": False})
-        assert tc.browser["browser"] == "firefox"
-        assert tc.browser["headless"] is False
 
     def test_scripts_fields(self):
         tc = ToolsConfig(scripts={"max_timeout": 120, "max_output_chars": 5000})
@@ -35,7 +29,6 @@ class TestConfig:
         cfg = Config()
         assert cfg.llm.provider == "zai"
         assert cfg.llm.prompt_prefix_cache_ttl_seconds == 300
-        assert cfg.tools.browser == {}
         assert cfg.tools.scripts == {}
         assert cfg.agent.max_steps == 15
 
@@ -47,16 +40,10 @@ class TestConfig:
     def test_load_config_with_toml(self, tmp_path: Path):
         toml_file = tmp_path / "test.toml"
         toml_file.write_text(textwrap.dedent("""\
-            [tools.browser]
-            browser = "firefox"
-            headless = false
-
             [tools.scripts]
             max_timeout = 60
         """))
         cfg = load_config(toml_file)
-        assert cfg.tools.browser["browser"] == "firefox"
-        assert cfg.tools.browser["headless"] is False
         assert cfg.tools.scripts["max_timeout"] == 60
 
     def test_provider_specific_api_key_from_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
