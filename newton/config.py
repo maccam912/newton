@@ -14,8 +14,8 @@ CONFIG_PATH = Path("config.toml")
 
 
 class LLMConfig(BaseModel):
-    provider: str = "openrouter"  # "openrouter" or "zai"
-    model: str = "stepfun/step-3.5-flash:free"
+    provider: str = "zai"  # "openrouter" or "zai"
+    model: str = "glm-5"
     api_key: str = ""
     base_url: str = ""
     system_prompt: str = "You are Newton, a helpful assistant."
@@ -92,7 +92,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
 
     # Normalize provider-specific API key aliases to llm.api_key.
     llm_data = data.setdefault("llm", {})
-    provider = str(llm_data.get("provider", "openrouter")).lower()
+    provider = str(llm_data.get("provider", "zai")).lower()
     if not llm_data.get("api_key"):
         if provider == "zai" and llm_data.get("zai_api_key"):
             llm_data["api_key"] = llm_data["zai_api_key"]

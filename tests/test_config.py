@@ -33,7 +33,7 @@ class TestToolsConfig:
 class TestConfig:
     def test_default_config(self):
         cfg = Config()
-        assert cfg.llm.provider == "openrouter"
+        assert cfg.llm.provider == "zai"
         assert cfg.llm.prompt_prefix_cache_ttl_seconds == 300
         assert cfg.tools.browser == {}
         assert cfg.tools.scripts == {}
@@ -42,7 +42,7 @@ class TestConfig:
     def test_load_config_missing_file(self, tmp_path: Path):
         """load_config with a non-existent file returns defaults."""
         cfg = load_config(tmp_path / "nope.toml")
-        assert cfg.llm.model == "stepfun/step-3.5-flash:free"
+        assert cfg.llm.model == "glm-5"
 
     def test_load_config_with_toml(self, tmp_path: Path):
         toml_file = tmp_path / "test.toml"
