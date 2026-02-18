@@ -37,7 +37,7 @@ class MemoryConfig(BaseModel):
     embedding_model: str = "openai/text-embedding-3-small"
     recall_window: int = 10        # recent messages to include in context
     archival_search_k: int = 5     # archival results per query
-    idle_archival_seconds: int = 300  # 5 minutes
+    idle_archival_seconds: int = 3600  # 1 hour
 
 
 class AgentConfig(BaseModel):

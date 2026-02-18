@@ -304,17 +304,16 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
                 f"Need replaced tokens > 5x note tokens (got {replaced_tokens} vs note {note_tokens})."
             ) + _step_tag(ctx.deps)
 
-        cleared = await ctx.deps.memory.recall_clear()
+        await _run_session_archival(ctx.deps.memory, ctx.deps.cfg, ctx.deps.bus)
         await ctx.deps.memory.context_collapse_set_note(note.strip())
         log.info(
-            "🧹 collapse_context: cleared=%d replaced_tokens=%d note_tokens=%d",
-            cleared,
+            "🧹 collapse_context: archived replaced_tokens=%d note_tokens=%d",
             replaced_tokens,
             note_tokens,
         )
         return (
-            "Context collapsed. "
-            f"Cleared {cleared} recall rows; token estimate {replaced_tokens} -> {note_tokens}."
+            "Context collapsed after archival. "
+            f"Token estimate {replaced_tokens} -> {note_tokens}."
         ) + _step_tag(ctx.deps)
 
     # == User management tools =============================================
