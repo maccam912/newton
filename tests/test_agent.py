@@ -50,8 +50,6 @@ class TestCreateAgent:
     def test_agent_has_tools(self, cfg: Config):
         agent = create_agent(cfg)
         # Collect tool names from all toolsets that expose them eagerly.
-        # The MCP toolset (browser) is lazy — tools are only known after
-        # the server is started, so we check it separately.
         tool_names: set[str] = set()
         for ts in agent.toolsets:
             tools = getattr(ts, "tools", None)
@@ -72,14 +70,6 @@ class TestCreateAgent:
         # External tools
         assert "web_search" in tool_names
         assert "run_python_script" in tool_names
-
-    def test_agent_has_browser_toolset(self, cfg: Config):
-        from pydantic_ai.mcp import MCPServerStdio
-        agent = create_agent(cfg)
-        mcp_toolsets = [ts for ts in agent.toolsets if isinstance(ts, MCPServerStdio)]
-        assert len(mcp_toolsets) == 1
-        assert mcp_toolsets[0].command == "npx"
-
 
 class TestRunInputBuilder:
     def test_text_only(self):
