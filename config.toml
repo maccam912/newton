@@ -1,8 +1,8 @@
 # Newton configuration
 
 [llm]
-provider = "openrouter" # "openrouter" or "zai"
-model = "qwen/qwen3.5-plus-02-15"
+provider = "zai" # "openrouter" or "zai"
+model = "glm-5"
 api_key = ""            # for provider="zai", or leave empty to use env vars
 base_url = ""           # optional; for z.ai defaults to https://api.z.ai/api/paas/v4
 reasoning_effort = "low"  # "low", "medium", or "high" (openrouter only)
@@ -78,4 +78,3 @@ max_output_chars = 10000  # truncate stdout/stderr beyond this
 [tools.vikunja]
 # base_url and api_token can also be set via VIKUNJA_BASE_URL / VIKUNJA_API_TOKEN env vars
 request_timeout = 15      # HTTP request timeout in seconds
-
