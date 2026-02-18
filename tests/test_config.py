@@ -33,6 +33,8 @@ class TestToolsConfig:
 class TestConfig:
     def test_default_config(self):
         cfg = Config()
+        assert cfg.llm.provider == "openrouter"
+        assert cfg.llm.prompt_prefix_cache_ttl_seconds == 300
         assert cfg.tools.browser == {}
         assert cfg.tools.scripts == {}
         assert cfg.agent.max_steps == 15
@@ -56,3 +58,25 @@ class TestConfig:
         assert cfg.tools.browser["browser"] == "firefox"
         assert cfg.tools.browser["headless"] is False
         assert cfg.tools.scripts["max_timeout"] == 60
+
+    def test_provider_specific_api_key_from_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text(textwrap.dedent("""\
+            [llm]
+            provider = "zai"
+            model = "glm-5"
+        """))
+        monkeypatch.setenv("ZAI_API_KEY", "zai-secret")
+        cfg = load_config(toml_file)
+        assert cfg.llm.api_key == "zai-secret"
+
+    def test_openrouter_api_key_not_overridden_by_zai_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        toml_file = tmp_path / "test.toml"
+        toml_file.write_text(textwrap.dedent("""\
+            [llm]
+            provider = "openrouter"
+        """))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+        cfg = load_config(toml_file)
+        assert cfg.llm.api_key == "or-key"

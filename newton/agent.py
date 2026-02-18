@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from datetime import datetime, UTC
 
 from pydantic_ai import Agent, RunContext, UserContent
+from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
+from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from newton.config import Config
-from datetime import datetime
 
-from newton.context import build_heartbeat_prompt, build_system_prompt
+from newton.context import build_heartbeat_prompt, build_system_prefix, build_system_prompt
 from newton.events import Event, EventBus, EventKind, ColorFormatter
 from newton.memory import MemoryStore
 from newton.tools.browser import create_browser_server
@@ -59,6 +62,8 @@ class AgentDeps:
         self.turn_ended: bool = False
         self.response_count: int = 0
         self.is_heartbeat: bool = False
+        self.system_prefix_cache: str = ""
+        self.system_prefix_cached_at: datetime | None = None
 
 
 def _step_tag(deps: AgentDeps) -> str:
@@ -73,17 +78,42 @@ def _step_tag(deps: AgentDeps) -> str:
     return f"\n[step {deps.step}/{deps.max_steps}]"
 
 
+
 # ---------------------------------------------------------------------------
 # Build agent + register tools
 # ---------------------------------------------------------------------------
 
+
+def _build_model(cfg: Config):
+    """Create an LLM model from provider config."""
+    provider = cfg.llm.provider.strip().lower()
+    if provider == "openrouter":
+        if cfg.llm.api_key:
+            openrouter_provider = OpenRouterProvider(api_key=cfg.llm.api_key)
+            return OpenRouterModel(cfg.llm.model, provider=openrouter_provider)
+        return OpenRouterModel(cfg.llm.model)
+    if provider == "zai":
+        base_url = cfg.llm.base_url or "https://api.z.ai/api/paas/v4"
+        zai_provider = OpenAIProvider(base_url=base_url, api_key=cfg.llm.api_key or None)
+        return OpenAIModel(cfg.llm.model, provider=zai_provider)
+
+    raise ValueError(f"Unsupported llm.provider '{cfg.llm.provider}'. Use 'openrouter' or 'zai'.")
+
+
+def _build_model_settings(cfg: Config):
+    """Provider-specific model settings."""
+    if cfg.llm.provider.strip().lower() == "openrouter":
+        return OpenRouterModelSettings(
+            openrouter_reasoning={"effort": cfg.llm.reasoning_effort},
+        )
+    return None
+
+
 def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
     """Build the agent with memory, communication, and control-flow tools."""
-    model = OpenRouterModel(cfg.llm.model)
+    model = _build_model(cfg)
     browser_server = create_browser_server(cfg)
-    model_settings = OpenRouterModelSettings(
-        openrouter_reasoning={"effort": cfg.llm.reasoning_effort},
-    )
+    model_settings = _build_model_settings(cfg)
     agent: Agent[AgentDeps, str] = Agent(
         model,
         deps_type=AgentDeps,
@@ -105,8 +135,25 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             )
             return prompt
 
+        ttl = max(ctx.deps.cfg.llm.prompt_prefix_cache_ttl_seconds, 0)
+        now = datetime.now(UTC)
+        cache_valid = (
+            ttl > 0
+            and ctx.deps.system_prefix_cache
+            and ctx.deps.system_prefix_cached_at is not None
+            and (now - ctx.deps.system_prefix_cached_at).total_seconds() < ttl
+        )
+        if not cache_valid:
+            ctx.deps.system_prefix_cache = await build_system_prefix(
+                ctx.deps.cfg, ctx.deps.memory
+            )
+            ctx.deps.system_prefix_cached_at = now
+
         prompt = await build_system_prompt(
-            ctx.deps.cfg, ctx.deps.memory, ctx.deps.current_message
+            ctx.deps.cfg,
+            ctx.deps.memory,
+            ctx.deps.current_message,
+            cached_prefix=ctx.deps.system_prefix_cache or None,
         )
         prompt += (
             f"\n\n--- TURN INFO ---\n"
@@ -410,7 +457,7 @@ def _get_session_archival_agent(cfg: Config) -> Agent[AgentDeps, SessionArchival
     if _session_archival_agent is None or _session_archival_agent_model != cfg.llm.model:
         _session_archival_agent_model = cfg.llm.model
         _session_archival_agent = Agent(
-            OpenRouterModel(cfg.llm.model),
+            _build_model(cfg),
             output_type=SessionArchivalResult,
             deps_type=AgentDeps,
             system_prompt=(
