@@ -57,6 +57,7 @@ db_path = "memory.db"
 embedding_model = "openai/text-embedding-3-small"
 recall_window = 10
 archival_search_k = 5
+idle_archival_seconds = 3600  # run idle archival after 1 hour
 
 [agent]
 max_steps = 15

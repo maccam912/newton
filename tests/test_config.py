@@ -31,6 +31,7 @@ class TestConfig:
         assert cfg.llm.prompt_prefix_cache_ttl_seconds == 300
         assert cfg.tools.scripts == {}
         assert cfg.agent.max_steps == 15
+        assert cfg.memory.idle_archival_seconds == 3600
 
     def test_load_config_missing_file(self, tmp_path: Path):
         """load_config with a non-existent file returns defaults."""
