@@ -147,6 +147,11 @@ class MemoryStore:
                 msg_count INTEGER NOT NULL DEFAULT 0,
                 created   TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS agent_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            );
         """)
         await self._db.commit()
 
@@ -419,6 +424,36 @@ class MemoryStore:
             count = row[0] if row else 0
             span.set_attribute("count", count)
             return count
+
+    async def context_collapse_get_note(self) -> str:
+        """Return the persisted context-collapse note, if any."""
+        with tracer.start_as_current_span("memory.context_collapse_get_note"):
+            assert self._db
+            cursor = await self._db.execute(
+                "SELECT value FROM agent_state WHERE key = 'context_collapse_note'"
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else ""
+
+    async def context_collapse_set_note(self, note: str) -> None:
+        """Persist the context-collapse note that should stay in prompt context."""
+        with tracer.start_as_current_span("memory.context_collapse_set_note"):
+            assert self._db
+            await self._db.execute(
+                "INSERT INTO agent_state (key, value) VALUES ('context_collapse_note', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (note,),
+            )
+            await self._db.commit()
+
+    async def context_collapse_clear_note(self) -> None:
+        """Remove any persisted context-collapse note."""
+        with tracer.start_as_current_span("memory.context_collapse_clear_note"):
+            assert self._db
+            await self._db.execute(
+                "DELETE FROM agent_state WHERE key = 'context_collapse_note'"
+            )
+            await self._db.commit()
 
     async def session_summary_save(self, summary: str, channels: str, msg_count: int) -> int:
         """Insert a session summary row. Returns the row id."""

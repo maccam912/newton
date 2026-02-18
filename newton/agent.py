@@ -77,6 +77,14 @@ def _step_tag(deps: AgentDeps) -> str:
     return f"\n[step {deps.step}/{deps.max_steps}]"
 
 
+def _estimate_tokens(text: str) -> int:
+    """Very rough token estimator for budget checks (about 4 chars/token)."""
+    trimmed = text.strip()
+    if not trimmed:
+        return 0
+    return max(1, len(trimmed) // 4)
+
+
 
 # ---------------------------------------------------------------------------
 # Build agent + register tools
@@ -255,6 +263,59 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             return "No archival memories found." + _step_tag(ctx.deps)
         body = "\n".join(f"- {r}" for r in results)
         return body + _step_tag(ctx.deps)
+
+    @agent.tool
+    async def collapse_context(
+        ctx: RunContext[AgentDeps],
+        note: str = "",
+        context_still_needed: bool = False,
+    ) -> str:
+        """Reset recent conversation context to save tokens.
+
+        Use this only when old conversation context is no longer needed.
+        Optional note will be kept right after the system prompt until you
+        collapse again or the next archival cycle runs.
+
+        The tool will refuse if context is still needed, there is too little
+        context to justify collapsing, or the replaced context is not >5x
+        the note token cost."""
+        if context_still_needed:
+            return (
+                "Refusing collapse_context: you said context is still needed. "
+                "Keep working with current context."
+            ) + _step_tag(ctx.deps)
+
+        history = await ctx.deps.memory.recall_recent(n=ctx.deps.cfg.memory.recall_window)
+        if not history:
+            return "Refusing collapse_context: no recent context to collapse." + _step_tag(ctx.deps)
+
+        replaced_text = "\n".join(msg["content"] for msg in history if msg.get("content"))
+        replaced_tokens = _estimate_tokens(replaced_text)
+        note_tokens = _estimate_tokens(note)
+
+        if replaced_tokens < 120:
+            return (
+                "Refusing collapse_context: context is too small to be worth collapsing yet."
+            ) + _step_tag(ctx.deps)
+
+        if note_tokens > 0 and replaced_tokens <= note_tokens * 5:
+            return (
+                "Refusing collapse_context: savings threshold not met. "
+                f"Need replaced tokens > 5x note tokens (got {replaced_tokens} vs note {note_tokens})."
+            ) + _step_tag(ctx.deps)
+
+        cleared = await ctx.deps.memory.recall_clear()
+        await ctx.deps.memory.context_collapse_set_note(note.strip())
+        log.info(
+            "🧹 collapse_context: cleared=%d replaced_tokens=%d note_tokens=%d",
+            cleared,
+            replaced_tokens,
+            note_tokens,
+        )
+        return (
+            "Context collapsed. "
+            f"Cleared {cleared} recall rows; token estimate {replaced_tokens} -> {note_tokens}."
+        ) + _step_tag(ctx.deps)
 
     # == User management tools =============================================
 
@@ -521,6 +582,7 @@ async def _run_session_archival(
 
         # Clear recall only after successful archival
         cleared = await memory.recall_clear()
+        await memory.context_collapse_clear_note()
         log.info("session archival: cleared %d recall rows", cleared)
 
 

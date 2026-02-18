@@ -64,6 +64,7 @@ class TestCreateAgent:
         assert "core_memory_update" in tool_names
         assert "archival_memory_insert" in tool_names
         assert "archival_memory_search" in tool_names
+        assert "collapse_context" in tool_names
         # User tools
         assert "user_upsert" in tool_names
         assert "user_details" in tool_names
