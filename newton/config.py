@@ -14,8 +14,8 @@ CONFIG_PATH = Path("config.toml")
 
 
 class LLMConfig(BaseModel):
-    provider: str = "zai"  # "openrouter" or "zai"
-    model: str = "glm-5"
+    provider: str = "openrouter"  # "openrouter" or "zai"
+    model: str = "google/gemini-3-flash-preview"
     api_key: str = ""
     base_url: str = ""
     system_prompt: str = "You are Newton, a helpful assistant."
@@ -37,7 +37,8 @@ class MemoryConfig(BaseModel):
     embedding_model: str = "openai/text-embedding-3-small"
     recall_window: int = 10        # recent messages to include in context
     archival_search_k: int = 5     # archival results per query
-    idle_archival_seconds: int = 3600  # 1 hour
+    idle_archival_seconds: int = 900  # 15 minutes
+    max_recall_tokens: int = 4000  # auto-archive when recall exceeds this
 
 
 class AgentConfig(BaseModel):
@@ -91,7 +92,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
 
     # Normalize provider-specific API key aliases to llm.api_key.
     llm_data = data.setdefault("llm", {})
-    provider = str(llm_data.get("provider", "zai")).lower()
+    provider = str(llm_data.get("provider", "openrouter")).lower()
     if not llm_data.get("api_key"):
         if provider == "zai" and llm_data.get("zai_api_key"):
             llm_data["api_key"] = llm_data["zai_api_key"]
