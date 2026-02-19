@@ -11,6 +11,7 @@ from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import Usage
 
 from newton.config import Config
 
@@ -83,6 +84,17 @@ def _estimate_tokens(text: str) -> int:
     if not trimmed:
         return 0
     return max(1, len(trimmed) // 4)
+
+
+def _format_usage(usage: Usage) -> str:
+    """Format token usage into a compact stats line."""
+    parts = [f"in:{usage.input_tokens or 0}"]
+    if usage.cache_read_tokens:
+        parts.append(f"cached:{usage.cache_read_tokens}")
+    if usage.cache_write_tokens:
+        parts.append(f"cache_write:{usage.cache_write_tokens}")
+    parts.append(f"out:{usage.output_tokens or 0}")
+    return " | ".join(parts)
 
 
 
@@ -577,9 +589,11 @@ async def process_turn(
 
         # Run the agent — pydantic-ai loops internally on tool calls.
         result = None
+        total_usage = Usage()
         try:
             with atracer.start_as_current_span("agent.run"):
                 result = await agent.run(run_input, deps=deps)
+                total_usage = total_usage + result.usage()
         except Exception:
             log.exception("agent.run failed — will attempt last-chance reply")
 
@@ -612,6 +626,7 @@ async def process_turn(
             try:
                 with atracer.start_as_current_span("agent.last_chance"):
                     result = await agent.run(last_chance_prompt, deps=deps)
+                    total_usage = total_usage + result.usage()
 
                 log.info(
                     "last-chance pass done  responses=%d  output=%s",
@@ -619,6 +634,20 @@ async def process_turn(
                 )
             except Exception:
                 log.exception("last-chance pass also failed")
+
+        # -- USAGE STATS (sent to user, not saved to recall) -----------------
+        if total_usage.input_tokens or total_usage.output_tokens:
+            stats_line = f"📊 {_format_usage(total_usage)}"
+            log.info("token usage: %s", stats_line)
+            await bus.put_outbox(
+                Event(
+                    source="agent",
+                    kind=EventKind.RESPONSE,
+                    payload=stats_line,
+                    reply_to=event.source,
+                    metadata=response_metadata,
+                )
+            )
 
         # -- AUTO-ARCHIVAL on context size ------------------------------------
         await _maybe_auto_archive(memory, cfg, bus)
