@@ -162,21 +162,12 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
         )
         prompt += (
             f"\n\n--- TURN INFO ---\n"
-            f"This message arrived on channel: {ctx.deps.event_source}\n"
-            f"Step budget: {ctx.deps.max_steps} tool calls per turn.\n"
-            f"Call respond_to_user to send messages. "
-            f"Call end_turn when you are finished.\n\n"
-            f"You have a 'notebook' core memory block that is yours to maintain. "
-            f"Use core_memory_update(block='notebook', content=...) to write to it. "
-            f"Anything you put there will be included in your system prompt on "
-            f"every future turn — use it for things you want to always have in "
-            f"mind: important patterns, ongoing tasks, reminders, or anything "
-            f"you find essential enough to keep front-and-center.\n\n"
-            f"Sub-agents: Use run_subagent(task) to delegate a multi-step task to a "
-            f"focused agent with a fresh context — only its final answer returns here, "
-            f"keeping intermediate steps out of your context. "
-            f"Use run_parallel_subagents(tasks) to run up to 5 independent tasks "
-            f"concurrently and receive all answers together when they complete."
+            f"Channel: {ctx.deps.event_source} | "
+            f"Budget: {ctx.deps.max_steps} steps | "
+            f"respond_to_user to reply, end_turn when done.\n"
+            f"'notebook' core memory block persists across turns — "
+            f"update it with core_memory_update. "
+            f"run_subagent/run_parallel_subagents for isolated multi-step tasks."
         )
         return prompt
 
@@ -230,6 +221,10 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
                 metadata=ctx.deps.event_metadata,
             )
         )
+        # Save the actual response to recall so context shows what was said
+        await ctx.deps.memory.recall_save(
+            "assistant", message, channel=channel, handled=True
+        )
         return f"Message sent to '{channel}'." + _step_tag(ctx.deps)
 
     # == Memory tools ======================================================
@@ -271,58 +266,6 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
             return "No archival memories found." + _step_tag(ctx.deps)
         body = "\n".join(f"- {r}" for r in results)
         return body + _step_tag(ctx.deps)
-
-    @agent.tool
-    async def collapse_context(
-        ctx: RunContext[AgentDeps],
-        note: str = "",
-        context_still_needed: bool = False,
-    ) -> str:
-        """Reset recent conversation context to save tokens.
-
-        Use this only when old conversation context is no longer needed.
-        Optional note will be kept right after the system prompt until you
-        collapse again or the next archival cycle runs.
-
-        The tool will refuse if context is still needed, there is too little
-        context to justify collapsing, or the replaced context is not >5x
-        the note token cost."""
-        if context_still_needed:
-            return (
-                "Refusing collapse_context: you said context is still needed. "
-                "Keep working with current context."
-            ) + _step_tag(ctx.deps)
-
-        history = await ctx.deps.memory.recall_recent(n=ctx.deps.cfg.memory.recall_window)
-        if not history:
-            return "Refusing collapse_context: no recent context to collapse." + _step_tag(ctx.deps)
-
-        replaced_text = "\n".join(msg["content"] for msg in history if msg.get("content"))
-        replaced_tokens = _estimate_tokens(replaced_text)
-        note_tokens = _estimate_tokens(note)
-
-        if replaced_tokens < 120:
-            return (
-                "Refusing collapse_context: context is too small to be worth collapsing yet."
-            ) + _step_tag(ctx.deps)
-
-        if note_tokens > 0 and replaced_tokens <= note_tokens * 5:
-            return (
-                "Refusing collapse_context: savings threshold not met. "
-                f"Need replaced tokens > 5x note tokens (got {replaced_tokens} vs note {note_tokens})."
-            ) + _step_tag(ctx.deps)
-
-        await _run_session_archival(ctx.deps.memory, ctx.deps.cfg, ctx.deps.bus)
-        await ctx.deps.memory.context_collapse_set_note(note.strip())
-        log.info(
-            "🧹 collapse_context: archived replaced_tokens=%d note_tokens=%d",
-            replaced_tokens,
-            note_tokens,
-        )
-        return (
-            "Context collapsed after archival. "
-            f"Token estimate {replaced_tokens} -> {note_tokens}."
-        ) + _step_tag(ctx.deps)
 
     # == User management tools =============================================
 
@@ -589,7 +532,6 @@ async def _run_session_archival(
 
         # Clear recall only after successful archival
         cleared = await memory.recall_clear()
-        await memory.context_collapse_clear_note()
         log.info("session archival: cleared %d recall rows", cleared)
 
 
@@ -651,11 +593,6 @@ async def process_turn(
                 deps.step, deps.turn_ended, result.output[:120],
             )
 
-            # Save the agent's internal summary to recall
-            await memory.recall_save(
-                "assistant", result.output, channel=event.source, handled=True
-            )
-
         # -- LAST-CHANCE RESPONSE -------------------------------------------
         # If the agent finished without sending any response to the user
         # (or crashed entirely), give it one more shot.
@@ -683,6 +620,28 @@ async def process_turn(
             except Exception:
                 log.exception("last-chance pass also failed")
 
+        # -- AUTO-ARCHIVAL on context size ------------------------------------
+        await _maybe_auto_archive(memory, cfg, bus)
+
+
+async def _maybe_auto_archive(
+    memory: MemoryStore, cfg: Config, bus: EventBus
+) -> None:
+    """Archive and reset context if recall memory exceeds the token budget."""
+    messages = await memory.recall_get_all()
+    if not messages:
+        return
+    total_text = "\n".join(m["content"] for m in messages if m.get("content"))
+    token_est = _estimate_tokens(total_text)
+    if token_est > cfg.memory.max_recall_tokens:
+        log.info(
+            "auto-archive: recall tokens ~%d > limit %d — archiving",
+            token_est, cfg.memory.max_recall_tokens,
+        )
+        try:
+            await _run_session_archival(memory, cfg, bus)
+        except Exception:
+            log.exception("auto-archive session archival failed")
 
 
 def _build_run_input(event: Event) -> tuple[str | Sequence[UserContent], str]:
@@ -735,10 +694,6 @@ async def process_heartbeat(
         try:
             result = await agent.run("heartbeat", deps=deps)
             if result:
-                await memory.recall_save(
-                    "assistant", f"[heartbeat] {result.output}",
-                    channel="scheduler", handled=True,
-                )
                 log.info("💓 heartbeat done  steps=%d  output=%s", deps.step, result.output[:80])
         except Exception:
             log.exception("heartbeat agent.run failed")
@@ -779,10 +734,6 @@ async def process_reminder(
         try:
             result = await agent.run(prompt, deps=deps)
             if result:
-                await memory.recall_save(
-                    "assistant", f"[reminder] {result.output}",
-                    channel="scheduler", handled=True,
-                )
                 log.info("⏰ reminder done  steps=%d  output=%s", deps.step, result.output[:80])
         except Exception:
             log.exception("reminder agent.run failed")

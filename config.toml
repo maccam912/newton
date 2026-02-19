@@ -1,9 +1,9 @@
 # Newton configuration
 
 [llm]
-provider = "zai" # "openrouter" or "zai"
-model = "glm-5"
-api_key = ""            # for provider="zai", or leave empty to use env vars
+provider = "openrouter"
+model = "google/gemini-3-flash-preview"
+api_key = ""            # leave empty to use OPENROUTER_API_KEY env var
 base_url = ""           # optional; for z.ai defaults to https://api.z.ai/api/paas/v4
 reasoning_effort = "low"  # "low", "medium", or "high" (openrouter only)
 prompt_prefix_cache_ttl_seconds = 300
@@ -57,7 +57,8 @@ db_path = "memory.db"
 embedding_model = "openai/text-embedding-3-small"
 recall_window = 10
 archival_search_k = 5
-idle_archival_seconds = 3600  # run idle archival after 1 hour
+idle_archival_seconds = 900  # run idle archival after 15 minutes
+max_recall_tokens = 4000     # auto-archive when recall context exceeds this
 
 [agent]
 max_steps = 15
