@@ -136,6 +136,7 @@ def create_agent(cfg: Config) -> Agent[AgentDeps, str]:
         model,
         deps_type=AgentDeps,
         model_settings=model_settings,
+        retries=2,
     )
 
     # -- Dynamic system prompt built from memory each turn -----------------
@@ -480,6 +481,7 @@ def _get_session_archival_agent(cfg: Config) -> Agent[AgentDeps, SessionArchival
             _build_model(cfg),
             output_type=SessionArchivalResult,
             deps_type=AgentDeps,
+            retries=2,
             system_prompt=(
                 "You are a memory manager. You are given a full session transcript. "
                 "Produce TWO things:\n"

@@ -76,6 +76,7 @@ def _get_or_create_subagent(cfg: Config) -> Agent:
     sub: Agent = Agent(
         model,
         deps_type=AgentDeps,
+        retries=2,
         system_prompt=_SUBAGENT_SYSTEM_PROMPT,
     )
 
